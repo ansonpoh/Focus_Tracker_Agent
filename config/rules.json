@@ -1,0 +1,36 @@
+{
+  "productive_apps": [
+    "Code.exe",
+    "pycharm64.exe",
+    "idea64.exe",
+    "notion.exe",
+    "obsidian.exe",
+    "excel.exe",
+    "winword.exe"
+  ],
+  "distracting_keywords": [
+    "youtube",
+    "tiktok",
+    "instagram",
+    "reddit",
+    "netflix",
+    "valorant",
+    "steam"
+  ],
+  "productive_keywords": [
+    "github",
+    "leetcode",
+    "stackoverflow",
+    "documentation",
+    "docs",
+    "localhost",
+    "portfolio",
+    "resume"
+  ],
+  "neutral_apps": [
+    "explorer.exe",
+    "discord.exe",
+    "telegram.exe",
+    "whatsapp.exe"
+  ]
+}

@@ -1,0 +1,4 @@
+psutil>=5.9
+schedule>=1.2
+plyer>=2.1
+winotify>=1.1.0

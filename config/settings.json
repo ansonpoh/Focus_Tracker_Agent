@@ -1,0 +1,12 @@
+{
+  "tracking_interval_seconds": 5,
+  "nudge_cooldown_minutes": 30,
+  "nudge_thresholds": {
+    "distracting_minutes_threshold": 20,
+    "distracting_window_minutes": 30,
+    "switch_threshold": 20,
+    "switch_window_minutes": 10,
+    "productive_minutes_threshold": 45
+  },
+  "daily_report_time": "22:00"
+}
