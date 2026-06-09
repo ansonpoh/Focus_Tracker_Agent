@@ -11,7 +11,25 @@ def test_classifier_uses_loaded_rules_without_rebuilding_sets(tmp_path: Path) ->
           "productive_apps": ["Code.exe"],
           "distracting_keywords": ["youtube"],
           "productive_keywords": ["docs"],
-          "neutral_apps": ["explorer.exe"]
+          "neutral_apps": ["explorer.exe"],
+          "browser_apps": ["chrome.exe"],
+          "productive_domains": ["github.com"],
+          "distracting_domains": ["youtube.com"],
+          "neutral_domains": ["calendar.google.com"],
+          "domain_aliases": {
+            "github": "github.com",
+            "youtube": "youtube.com"
+          },
+          "app_context_tags": {
+            "code.exe": ["work", "coding"]
+          },
+          "keyword_context_tags": {
+            "docs": ["research"]
+          },
+          "domain_context_tags": {
+            "github.com": ["work", "coding"],
+            "youtube.com": ["video"]
+          }
         }
         """.strip(),
         encoding="utf-8",
@@ -19,8 +37,21 @@ def test_classifier_uses_loaded_rules_without_rebuilding_sets(tmp_path: Path) ->
 
     classifier = RuleBasedClassifier(rules_path)
 
-    assert classifier.classify("Code.exe", "anything") == "productive"
-    assert classifier.classify("chrome.exe", "YouTube - Google Chrome") == "distracting"
-    assert classifier.classify("chrome.exe", "Project Docs") == "productive"
-    assert classifier.classify("explorer.exe", "Files") == "neutral"
-    assert classifier.classify("unknown.exe", "Other") == "unknown"
+    code_result = classifier.classify("Code.exe", "anything")
+    youtube_result = classifier.classify("chrome.exe", "YouTube - Google Chrome")
+    github_result = classifier.classify("chrome.exe", "openai/openai-python pull request - GitHub - Google Chrome")
+    docs_result = classifier.classify("chrome.exe", "Project Docs")
+    neutral_result = classifier.classify("explorer.exe", "Files")
+    unknown_result = classifier.classify("unknown.exe", "Other")
+
+    assert code_result.category == "productive"
+    assert "coding" in code_result.context_tags
+    assert youtube_result.category == "distracting"
+    assert youtube_result.site_hint == "youtube.com"
+    assert github_result.category == "productive"
+    assert github_result.site_hint == "github.com"
+    assert "work" in github_result.context_tags
+    assert docs_result.category == "productive"
+    assert "research" in docs_result.context_tags
+    assert neutral_result.category == "neutral"
+    assert unknown_result.category == "unknown"

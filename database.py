@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
+import json
 import sqlite3
 
 
@@ -90,7 +91,9 @@ class FocusDatabase:
                     app_name TEXT NOT NULL,
                     window_title TEXT,
                     category TEXT NOT NULL,
-                    duration_seconds INTEGER NOT NULL
+                    duration_seconds INTEGER NOT NULL,
+                    context_tags TEXT NOT NULL DEFAULT '[]',
+                    site_hint TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS nudges (
@@ -120,6 +123,14 @@ class FocusDatabase:
                 ON activity_log (timestamp, app_name);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(activity_log)").fetchall()
+            }
+            if "context_tags" not in columns:
+                connection.execute("ALTER TABLE activity_log ADD COLUMN context_tags TEXT NOT NULL DEFAULT '[]'")
+            if "site_hint" not in columns:
+                connection.execute("ALTER TABLE activity_log ADD COLUMN site_hint TEXT NOT NULL DEFAULT ''")
             connection.execute(
                 """
                 DELETE FROM daily_summary
@@ -150,13 +161,15 @@ class FocusDatabase:
         window_title: str,
         category: str,
         duration_seconds: int,
+        context_tags: list[str] | None = None,
+        site_hint: str = "",
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO activity_log (
-                    timestamp, app_name, window_title, category, duration_seconds
-                ) VALUES (?, ?, ?, ?, ?)
+                    timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     timestamp,
@@ -164,6 +177,8 @@ class FocusDatabase:
                     window_title or "",
                     category or "unknown",
                     int(duration_seconds),
+                    json.dumps(context_tags or []),
+                    site_hint or "",
                 ),
             )
 
@@ -215,7 +230,7 @@ class FocusDatabase:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT timestamp, app_name, window_title, category, duration_seconds
+                SELECT timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint
                 FROM activity_log
                 WHERE timestamp >= ? AND timestamp < ?
                 ORDER BY timestamp ASC, id ASC

@@ -186,6 +186,8 @@ def build_emailer(settings: dict) -> ReportEmailer:
 
 def deliver_report(reporter: DailyReporter, emailer: ReportEmailer, report_date: str) -> Path:
     report_path = reporter.generate_daily_report(report_date)
+    reporter.generate_weekly_report(report_date)
+    reporter.generate_monthly_report(report_date)
     emailer.send_report(report_path)
     return report_path
 
@@ -230,13 +232,15 @@ def main() -> None:
             loop_started = time.monotonic()
             try:
                 snapshot = get_active_window()
-                category = classifier.classify(snapshot.get("app_name"), snapshot.get("window_title"))
+                classification = classifier.classify(snapshot.get("app_name"), snapshot.get("window_title"))
                 database.insert_activity(
                     timestamp=str(snapshot.get("timestamp") or datetime.now().replace(microsecond=0).isoformat()),
                     app_name=str(snapshot.get("app_name") or "unknown"),
                     window_title=str(snapshot.get("window_title") or ""),
-                    category=category,
+                    category=classification.category,
                     duration_seconds=interval_seconds,
+                    context_tags=classification.context_tags,
+                    site_hint=classification.site_hint,
                 )
                 nudger.check_nudges()
             except Exception as exc:

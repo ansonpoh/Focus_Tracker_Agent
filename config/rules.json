@@ -32,5 +32,179 @@
     "discord.exe",
     "telegram.exe",
     "whatsapp.exe"
-  ]
+  ],
+  "browser_apps": [
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "brave.exe"
+  ],
+  "productive_domains": [
+    "github.com",
+    "stackoverflow.com",
+    "leetcode.com",
+    "docs.python.org",
+    "developer.mozilla.org",
+    "docs.google.com",
+    "figma.com",
+    "localhost",
+    "linkedin.com"
+  ],
+  "distracting_domains": [
+    "youtube.com",
+    "reddit.com",
+    "tiktok.com",
+    "instagram.com",
+    "netflix.com",
+    "x.com",
+    "twitter.com"
+  ],
+  "neutral_domains": [
+    "mail.google.com",
+    "calendar.google.com",
+    "drive.google.com"
+  ],
+  "domain_aliases": {
+    "github": "github.com",
+    "stack overflow": "stackoverflow.com",
+    "stackoverflow": "stackoverflow.com",
+    "leetcode": "leetcode.com",
+    "youtube": "youtube.com",
+    "reddit": "reddit.com",
+    "tiktok": "tiktok.com",
+    "instagram": "instagram.com",
+    "netflix": "netflix.com",
+    "twitter": "twitter.com",
+    "x.com": "x.com",
+    "gmail": "mail.google.com",
+    "google calendar": "calendar.google.com",
+    "calendar": "calendar.google.com",
+    "google docs": "docs.google.com",
+    "docs": "docs.google.com",
+    "figma": "figma.com",
+    "linkedin": "linkedin.com",
+    "localhost": "localhost"
+  },
+  "app_context_tags": {
+    "code.exe": [
+      "work",
+      "coding"
+    ],
+    "pycharm64.exe": [
+      "work",
+      "coding"
+    ],
+    "idea64.exe": [
+      "work",
+      "coding"
+    ],
+    "notion.exe": [
+      "work",
+      "planning"
+    ],
+    "obsidian.exe": [
+      "study",
+      "notes"
+    ],
+    "excel.exe": [
+      "work",
+      "analysis"
+    ],
+    "winword.exe": [
+      "work",
+      "writing"
+    ],
+    "discord.exe": [
+      "communication"
+    ],
+    "telegram.exe": [
+      "communication"
+    ],
+    "whatsapp.exe": [
+      "communication"
+    ]
+  },
+  "keyword_context_tags": {
+    "documentation": [
+      "work",
+      "research"
+    ],
+    "docs": [
+      "research"
+    ],
+    "github": [
+      "work",
+      "coding"
+    ],
+    "leetcode": [
+      "study",
+      "interview_prep"
+    ],
+    "portfolio": [
+      "job_search",
+      "writing"
+    ],
+    "resume": [
+      "job_search",
+      "writing"
+    ],
+    "stackoverflow": [
+      "work",
+      "research"
+    ]
+  },
+  "domain_context_tags": {
+    "github.com": [
+      "work",
+      "coding"
+    ],
+    "stackoverflow.com": [
+      "work",
+      "research"
+    ],
+    "leetcode.com": [
+      "study",
+      "interview_prep"
+    ],
+    "linkedin.com": [
+      "job_search",
+      "networking"
+    ],
+    "docs.google.com": [
+      "work",
+      "writing"
+    ],
+    "docs.python.org": [
+      "work",
+      "research"
+    ],
+    "developer.mozilla.org": [
+      "work",
+      "research"
+    ],
+    "mail.google.com": [
+      "communication"
+    ],
+    "calendar.google.com": [
+      "planning"
+    ],
+    "drive.google.com": [
+      "work",
+      "docs"
+    ],
+    "youtube.com": [
+      "video",
+      "learning"
+    ],
+    "reddit.com": [
+      "social"
+    ],
+    "instagram.com": [
+      "social"
+    ],
+    "localhost": [
+      "work",
+      "testing"
+    ]
+  }
 }
