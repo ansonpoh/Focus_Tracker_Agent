@@ -8,5 +8,16 @@
     "switch_window_minutes": 10,
     "productive_minutes_threshold": 45
   },
-  "daily_report_time": "22:00"
+  "daily_report_time": "22:00",
+  "email_reports": {
+    "enabled": true,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "sender": "ansonpoh0909@gmail.com",
+    "recipient": "ansonpoh0909@gmail.com",
+    "username_env": "FOCUS_TRACKER_EMAIL_USERNAME",
+    "password_env": "FOCUS_TRACKER_EMAIL_PASSWORD",
+    "use_tls": true,
+    "attach_report_file": true
+  }
 }
