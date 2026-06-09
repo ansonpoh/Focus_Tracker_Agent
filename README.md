@@ -9,8 +9,10 @@ This is a local Windows background agent that samples the foreground window ever
 - Detects common browser sites more explicitly for Chrome, Edge, Firefox, and Brave by matching browser-specific site/domain rules.
 - Tags samples with context labels such as `work`, `study`, `job_search`, `planning`, `communication`, and `research`.
 - Stores all activity locally in SQLite.
+- Rotates operational logs to `data/focus_tracker.log`.
 - Sends non-invasive desktop nudges when behavior patterns suggest distraction or frequent switching.
 - Generates daily, weekly, and monthly Markdown reports in `reports/`.
+- Adds a confidence score to each report so low-quality data does not drive overconfident recommendations.
 - Can optionally email the daily report through Gmail SMTP.
 
 ## Privacy boundaries
@@ -25,6 +27,7 @@ This is a local Windows background agent that samples the foreground window ever
 1. `observer.py` reads the current foreground window using Windows APIs via `ctypes`.
 2. `classifier.py` applies the rules from `config/rules.json`.
 3. `database.py` stores activity, browser site hints, context tags, and nudges in `data/focus_tracker.db`.
+   It also applies schema migrations automatically and can purge old raw activity rows based on retention settings.
 4. `nudger.py` checks recent usage patterns and shows desktop notifications.
 5. `reporter.py` builds daily, weekly, and monthly Markdown reports, including focus blocks and interruption metrics.
 6. `main.py` runs the loop, handles shutdown, and triggers the final report.
@@ -111,9 +114,12 @@ This file controls runtime behavior:
 
 - `tracking_interval_seconds`
 - `nudge_cooldown_minutes`
+- `raw_activity_retention_days`
 - `nudge_thresholds`
 - `daily_report_time`
 - `email_reports`
+
+`raw_activity_retention_days` controls how long raw per-sample activity rows are kept before automatic cleanup.
 
 ### Gmail delivery
 
@@ -150,15 +156,17 @@ FOCUS_TRACKER_EMAIL_USERNAME=your-gmail-address@gmail.com
 FOCUS_TRACKER_EMAIL_PASSWORD=your-gmail-app-password
 ```
 
-Use a Gmail app password, not your normal Google account password. Once enabled, the agent still writes the local Markdown file and also emails the report body, with the `.md` file attached by default.
+Use a Gmail app password, not your normal Google account password. Once enabled, the agent still writes the local Markdown file and also emails the report body, with a rendered PDF attached by default.
 
 ## Sample report
 
 ```markdown
 # Focus Report - 2026-06-09
 
-## Summary
+## Snapshot
 - Total tracked time: 6h 20m
+- Focus score: 78/100
+- Report confidence: 92/100 (High)
 - Productive: 3h 10m
 - Distracting: 1h 05m
 - Neutral: 1h 30m
@@ -193,3 +201,9 @@ Use a Gmail app password, not your normal Google account password. Once enabled,
 ## Recommendation
 Your strongest focus period was in the morning. Schedule coding or deep work before lunch.
 ```
+
+## Operational files
+
+- `data/focus_tracker.db`: raw activity, nudges, and daily summaries
+- `data/focus_tracker.log`: rotating runtime log for startup, report delivery, cleanup, and warning events
+- `reports/*.pdf`: generated when a report is rendered for email attachment

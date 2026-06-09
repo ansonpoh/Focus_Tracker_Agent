@@ -20,6 +20,61 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
+    (
+        1,
+        """
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            app_name TEXT NOT NULL,
+            window_title TEXT,
+            category TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS nudges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            nudge_type TEXT NOT NULL,
+            message TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_summary (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            productive_seconds INTEGER,
+            distracting_seconds INTEGER,
+            neutral_seconds INTEGER,
+            unknown_seconds INTEGER,
+            summary_text TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp
+        ON activity_log (timestamp);
+
+        CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp_category
+        ON activity_log (timestamp, category);
+
+        CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp_app_name
+        ON activity_log (timestamp, app_name);
+        """,
+    ),
+    (
+        2,
+        """
+        ALTER TABLE activity_log ADD COLUMN context_tags TEXT NOT NULL DEFAULT '[]';
+        """,
+    ),
+    (
+        3,
+        """
+        ALTER TABLE activity_log ADD COLUMN site_hint TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+]
+
+
 def count_switches(rows: Iterable[dict[str, Any]], cutoff: datetime | None = None) -> int:
     previous_key: tuple[str, str] | None = None
     switches = 0
@@ -83,54 +138,8 @@ class FocusDatabase:
         with sqlite3.connect(self.db_path) as connection:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA journal_mode=WAL;")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS activity_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    app_name TEXT NOT NULL,
-                    window_title TEXT,
-                    category TEXT NOT NULL,
-                    duration_seconds INTEGER NOT NULL,
-                    context_tags TEXT NOT NULL DEFAULT '[]',
-                    site_hint TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE TABLE IF NOT EXISTS nudges (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    nudge_type TEXT NOT NULL,
-                    message TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS daily_summary (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date TEXT NOT NULL,
-                    productive_seconds INTEGER,
-                    distracting_seconds INTEGER,
-                    neutral_seconds INTEGER,
-                    unknown_seconds INTEGER,
-                    summary_text TEXT
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp
-                ON activity_log (timestamp);
-
-                CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp_category
-                ON activity_log (timestamp, category);
-
-                CREATE INDEX IF NOT EXISTS idx_activity_log_timestamp_app_name
-                ON activity_log (timestamp, app_name);
-                """
-            )
-            columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(activity_log)").fetchall()
-            }
-            if "context_tags" not in columns:
-                connection.execute("ALTER TABLE activity_log ADD COLUMN context_tags TEXT NOT NULL DEFAULT '[]'")
-            if "site_hint" not in columns:
-                connection.execute("ALTER TABLE activity_log ADD COLUMN site_hint TEXT NOT NULL DEFAULT ''")
+            self._ensure_migrations_table(connection)
+            self._apply_migrations(connection)
             connection.execute(
                 """
                 DELETE FROM daily_summary
@@ -146,6 +155,34 @@ class FocusDatabase:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_summary_date_unique
                 ON daily_summary (date)
                 """
+            )
+
+    def _ensure_migrations_table(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def _apply_migrations(self, connection: sqlite3.Connection) -> None:
+        applied_versions = {
+            int(row["version"])
+            for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        for version, sql in SCHEMA_MIGRATIONS:
+            if version in applied_versions:
+                continue
+            try:
+                connection.executescript(sql)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, _iso(datetime.now())),
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -359,3 +396,14 @@ class FocusDatabase:
         current_time = now or datetime.now()
         rows = self.get_recent_activity(minutes=max_minutes, now=current_time)
         return productive_streak_seconds(rows)
+
+    def purge_activity_before(self, cutoff: datetime) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM activity_log
+                WHERE timestamp < ?
+                """,
+                (_iso(cutoff),),
+            )
+            return int(cursor.rowcount or 0)

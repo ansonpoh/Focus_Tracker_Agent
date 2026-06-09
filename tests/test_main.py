@@ -1,6 +1,15 @@
 import os
 
-from main import DEFAULT_SETTINGS, build_emailer, build_nudge_config, load_env_file, load_settings_from_data
+from main import (
+    DEFAULT_SETTINGS,
+    build_emailer,
+    build_nudge_config,
+    configure_logging,
+    load_env_file,
+    load_settings_from_data,
+    run_retention_cleanup,
+    validate_runtime_environment,
+)
 
 
 def test_load_settings_falls_back_on_invalid_values() -> None:
@@ -105,3 +114,65 @@ def test_load_env_file_sets_missing_variables_only(tmp_path) -> None:
             os.environ.pop("FOCUS_TRACKER_EMAIL_PASSWORD", None)
         else:
             os.environ["FOCUS_TRACKER_EMAIL_PASSWORD"] = original_password
+
+
+def test_validate_runtime_environment_rejects_non_windows(monkeypatch) -> None:
+    monkeypatch.setattr("main.sys.platform", "linux")
+
+    try:
+        validate_runtime_environment()
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "requires Windows interactive desktop APIs" in str(exc)
+
+
+def test_validate_runtime_environment_allows_windows(monkeypatch) -> None:
+    monkeypatch.setattr("main.sys.platform", "win32")
+
+    validate_runtime_environment()
+
+
+def test_configure_logging_writes_to_expected_file(tmp_path) -> None:
+    logger = configure_logging(tmp_path / "focus_tracker.log")
+    logger.info("logging smoke test")
+
+    log_text = (tmp_path / "focus_tracker.log").read_text(encoding="utf-8")
+
+    assert "INFO logging smoke test" in log_text
+
+
+def test_run_retention_cleanup_uses_database_cutoff(tmp_path) -> None:
+    database = build_test_database(tmp_path)
+    logger = configure_logging(tmp_path / "retention.log")
+
+    database.insert_activity(
+        timestamp="2026-05-01T09:00:00",
+        app_name="Code.exe",
+        window_title="Editor",
+        category="productive",
+        duration_seconds=60,
+    )
+    database.insert_activity(
+        timestamp="2026-06-09T09:00:00",
+        app_name="Code.exe",
+        window_title="Editor",
+        category="productive",
+        duration_seconds=60,
+    )
+
+    deleted_rows = run_retention_cleanup(
+        database,
+        30,
+        logger,
+        now=__import__("datetime").datetime(2026, 6, 9, 12, 0, 0),
+    )
+
+    assert deleted_rows == 1
+
+
+def build_test_database(tmp_path):
+    from database import FocusDatabase
+
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    return database

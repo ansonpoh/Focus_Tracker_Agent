@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import json
+import logging
 import os
+import sys
 import time
 
 from classifier import load_classifier
@@ -22,11 +25,13 @@ ENV_PATH = BASE_DIR / ".env"
 RULES_PATH = CONFIG_DIR / "rules.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 DATABASE_PATH = DATA_DIR / "focus_tracker.db"
+LOG_PATH = DATA_DIR / "focus_tracker.log"
 
 
 DEFAULT_SETTINGS = {
     "tracking_interval_seconds": 5,
     "nudge_cooldown_minutes": 30,
+    "raw_activity_retention_days": 90,
     "nudge_thresholds": {
         "distracting_minutes_threshold": 20,
         "distracting_window_minutes": 30,
@@ -47,6 +52,9 @@ DEFAULT_SETTINGS = {
         "attach_report_file": True,
     },
 }
+
+
+LOGGER_NAME = "focus_tracker"
 
 
 def _safe_int(value: object, default: int, *, minimum: int = 1) -> int:
@@ -77,6 +85,48 @@ def _safe_string(value: object, default: str) -> str:
     if isinstance(value, str):
         return value
     return default
+
+
+def configure_logging(log_path: Path = LOG_PATH) -> logging.Logger:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger = logging.getLogger(LOGGER_NAME)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+
+    if not any(isinstance(handler, logging.StreamHandler) and not isinstance(handler, RotatingFileHandler) for handler in logger.handlers):
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+
+    resolved_log_path = log_path.resolve()
+    file_handler_exists = False
+    for handler in logger.handlers:
+        if isinstance(handler, RotatingFileHandler) and Path(handler.baseFilename).resolve() == resolved_log_path:
+            file_handler_exists = True
+            break
+
+    if not file_handler_exists:
+        file_handler = RotatingFileHandler(
+            resolved_log_path,
+            maxBytes=1_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    return logger
+
+
+def validate_runtime_environment() -> None:
+    if sys.platform != "win32":
+        raise RuntimeError(
+            "Focus Tracker requires Windows interactive desktop APIs. "
+            "This runtime cannot capture the active foreground window safely."
+        )
 
 
 def load_env_file(env_path: Path = ENV_PATH) -> None:
@@ -111,6 +161,10 @@ def load_settings_from_data(raw: object) -> dict:
     settings["nudge_cooldown_minutes"] = _safe_int(
         raw.get("nudge_cooldown_minutes"),
         settings["nudge_cooldown_minutes"],
+    )
+    settings["raw_activity_retention_days"] = _safe_int(
+        raw.get("raw_activity_retention_days"),
+        settings["raw_activity_retention_days"],
     )
     if _is_valid_time_string(raw.get("daily_report_time")):
         settings["daily_report_time"] = str(raw["daily_report_time"])
@@ -192,18 +246,41 @@ def deliver_report(reporter: DailyReporter, emailer: ReportEmailer, report_date:
     return report_path
 
 
-def schedule_daily_report(reporter: DailyReporter, emailer: ReportEmailer, time_str: str) -> None:
+def run_retention_cleanup(
+    database: FocusDatabase,
+    retention_days: int,
+    logger: logging.Logger,
+    *,
+    now: datetime | None = None,
+) -> int:
+    cutoff = (now or datetime.now()) - timedelta(days=retention_days)
+    deleted_rows = database.purge_activity_before(cutoff)
+    if deleted_rows > 0:
+        logger.info("Purged %s raw activity rows older than %s days.", deleted_rows, retention_days)
+    return deleted_rows
+
+
+def schedule_daily_report(
+    reporter: DailyReporter,
+    emailer: ReportEmailer,
+    database: FocusDatabase,
+    time_str: str,
+    retention_days: int,
+) -> None:
     import schedule
+
+    logger = logging.getLogger(LOGGER_NAME)
 
     def _run_report() -> None:
         report_date = datetime.now().date().isoformat()
         try:
             report_path = deliver_report(reporter, emailer, report_date)
-            print(f"Report written to: {report_path}")
+            logger.info("Report written to: %s", report_path)
             if emailer.is_configured():
-                print(f"Report emailed to: {emailer.settings.recipient}")
+                logger.info("Report emailed to: %s", emailer.settings.recipient)
+            run_retention_cleanup(database, retention_days, logger)
         except Exception as exc:
-            print(f"[warn] Scheduled report delivery failed: {exc}")
+            logger.warning("Scheduled report delivery failed: %s", exc, exc_info=True)
 
     schedule.every().day.at(time_str).do(_run_report)
 
@@ -211,7 +288,9 @@ def schedule_daily_report(reporter: DailyReporter, emailer: ReportEmailer, time_
 def main() -> None:
     import schedule
 
+    logger = configure_logging()
     load_env_file()
+    validate_runtime_environment()
     settings = load_settings()
 
     database = FocusDatabase(DATABASE_PATH)
@@ -222,10 +301,17 @@ def main() -> None:
     reporter = DailyReporter(database=database, reports_dir=REPORTS_DIR)
     emailer = build_emailer(settings)
 
-    schedule_daily_report(reporter, emailer, settings["daily_report_time"])
+    run_retention_cleanup(database, int(settings["raw_activity_retention_days"]), logger)
+    schedule_daily_report(
+        reporter,
+        emailer,
+        database,
+        settings["daily_report_time"],
+        int(settings["raw_activity_retention_days"]),
+    )
 
     interval_seconds = int(settings["tracking_interval_seconds"])
-    print("Focus Tracker Agent running. Press Ctrl+C to stop.")
+    logger.info("Focus Tracker Agent running. Press Ctrl+C to stop.")
 
     try:
         while True:
@@ -244,22 +330,22 @@ def main() -> None:
                 )
                 nudger.check_nudges()
             except Exception as exc:
-                print(f"[warn] Tracking iteration failed: {exc}")
+                logger.warning("Tracking iteration failed: %s", exc, exc_info=True)
             finally:
                 schedule.run_pending()
                 elapsed = time.monotonic() - loop_started
                 sleep_for = max(0.0, interval_seconds - elapsed)
                 time.sleep(sleep_for)
     except KeyboardInterrupt:
-        print("Stopping tracker and generating final report...")
+        logger.info("Stopping tracker and generating final report...")
     finally:
         try:
             report_path = deliver_report(reporter, emailer, datetime.now().date().isoformat())
-            print(f"Report written to: {report_path}")
+            logger.info("Report written to: %s", report_path)
             if emailer.is_configured():
-                print(f"Report emailed to: {emailer.settings.recipient}")
+                logger.info("Report emailed to: %s", emailer.settings.recipient)
         except Exception as exc:
-            print(f"[warn] Could not generate final report: {exc}")
+            logger.warning("Could not generate final report: %s", exc, exc_info=True)
 
 
 if __name__ == "__main__":

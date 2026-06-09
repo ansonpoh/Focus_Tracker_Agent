@@ -231,5 +231,39 @@ def test_recommendation_is_specific_and_measurable(tmp_path) -> None:
     report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
 
     assert "## Recommendation" in report_text
-    assert "Start with one 15-minute protected work block before opening browser tabs tied to YouTube." in report_text
-    assert "The next goal is one uninterrupted 10-minute Code.exe session." in report_text
+    assert "Report confidence:" in report_text
+    assert "Treat today's recommendation as provisional." in report_text
+    assert "before changing your routine based on this report." in report_text
+
+
+def test_high_confidence_report_keeps_specific_recommendation(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    previous_rows = [
+        ("2026-06-08T09:00:00", "Code.exe", "Editor", "productive", 1800, ["work", "coding"], ""),
+        ("2026-06-08T09:30:00", "chrome.exe", "GitHub - Google Chrome", "productive", 900, ["work", "coding"], "github.com"),
+    ]
+    current_rows = [
+        ("2026-06-09T09:00:00", "Code.exe", "Editor", "productive", 1800, ["work", "coding"], ""),
+        ("2026-06-09T09:30:00", "chrome.exe", "YouTube - Google Chrome", "distracting", 1200, ["video"], "youtube.com"),
+    ]
+
+    for timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint in previous_rows + current_rows:
+        database.insert_activity(
+            timestamp=timestamp,
+            app_name=app_name,
+            window_title=window_title,
+            category=category,
+            duration_seconds=duration_seconds,
+            context_tags=context_tags,
+            site_hint=site_hint,
+        )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "Report confidence: 100/100 (High)" in report_text
+    assert "Treat today's recommendation as provisional." not in report_text
+    assert "Repeat yesterday's opening work pattern earlier in the day." in report_text
+    assert "The next goal is one uninterrupted 35m focus block." in report_text

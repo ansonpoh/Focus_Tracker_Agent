@@ -3,5 +3,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 data/*.db
+data/*.log
 reports/*.md
+reports/*.pdf
 .env
