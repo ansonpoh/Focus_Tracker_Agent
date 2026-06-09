@@ -38,11 +38,11 @@ def test_weekly_report_aggregates_multiple_days(tmp_path) -> None:
     report_text = report_path.read_text(encoding="utf-8")
 
     assert report_path.name == "focus-report-week-2026-06-08.md"
-    assert "# Focus Report - Week of 2026-06-08" in report_text
+    assert "# Focus Report — Week of 2026-06-08" in report_text
     assert "Total tracked time: 17m" in report_text
-    assert "Productive: 10m" in report_text
-    assert "Distracting: 5m" in report_text
-    assert "Neutral: 2m" in report_text
+    assert "Productive: 10m — 59%" in report_text
+    assert "Distracting: 5m — 29%" in report_text
+    assert "Neutral: 2m — 12%" in report_text
 
 
 def test_monthly_report_uses_month_boundaries(tmp_path) -> None:
@@ -69,30 +69,22 @@ def test_monthly_report_uses_month_boundaries(tmp_path) -> None:
     report_text = report_path.read_text(encoding="utf-8")
 
     assert report_path.name == "focus-report-month-2026-06.md"
-    assert "# Focus Report - 2026-06" in report_text
+    assert "# Focus Report — 2026-06" in report_text
     assert "Total tracked time: 15m" in report_text
-    assert "Neutral: 0s" in report_text
+    assert "Neutral: 0s — 0%" in report_text
 
 
-def test_daily_report_includes_sites_tags_and_focus_block_metrics(tmp_path) -> None:
+def test_daily_report_outputs_percentages_and_tables(tmp_path) -> None:
     database = FocusDatabase(tmp_path / "focus.db")
     database.initialize()
     reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
 
-    comparison_rows = [
-        ("2026-06-08T09:00:00", "Code.exe", "Deep work", "productive", 1800, ["work", "coding"], ""),
-        ("2026-06-08T10:00:00", "chrome.exe", "YouTube - Google Chrome", "distracting", 300, ["video"], "youtube.com"),
-        ("2026-06-10T08:00:00", "Code.exe", "Deep work", "productive", 2400, ["work", "coding"], ""),
-        ("2026-06-10T09:00:00", "Code.exe", "Review", "productive", 1800, ["work", "coding"], ""),
-    ]
     rows = [
-        ("2026-06-09T09:00:00", "Code.exe", "Project editor", "productive", 300, ["work", "coding"], ""),
-        ("2026-06-09T09:05:00", "Code.exe", "Project editor", "productive", 300, ["work", "coding"], ""),
-        ("2026-06-09T09:10:00", "chrome.exe", "YouTube - Google Chrome", "distracting", 120, ["video"], "youtube.com"),
-        ("2026-06-09T09:12:00", "chrome.exe", "Pull request - GitHub - Google Chrome", "productive", 600, ["work", "coding"], "github.com"),
-        ("2026-06-09T09:22:00", "notion.exe", "Sprint notes", "productive", 300, ["work", "planning"], ""),
+        ("2026-06-09T14:41:00", "Code.exe", "Editor", "productive", 120, ["work", "coding"], ""),
+        ("2026-06-09T14:43:00", "chrome.exe", "YouTube - Google Chrome", "distracting", 600, [], ""),
+        ("2026-06-09T14:53:00", "Codex.exe", "Codex", "unknown", 15, [], ""),
     ]
-    for timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint in comparison_rows + rows:
+    for timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint in rows:
         database.insert_activity(
             timestamp=timestamp,
             app_name=app_name,
@@ -103,33 +95,141 @@ def test_daily_report_includes_sites_tags_and_focus_block_metrics(tmp_path) -> N
             site_hint=site_hint,
         )
 
-    report_path = reporter.generate_daily_report("2026-06-09")
-    report_text = report_path.read_text(encoding="utf-8")
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "Productive: 2m — 16%" in report_text
+    assert "Distracting: 10m — 82%" in report_text
+    assert "Unknown: 15s — 2%" in report_text
+    assert "## Time Breakdown" in report_text
+    assert "| Category | Time | Share |" in report_text
+    assert "| Productive | 2m | 16% |" in report_text
+    assert "| Distracting | 10m | 82% |" in report_text
+
+
+def test_browser_site_detection_uses_window_title_for_youtube(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    database.insert_activity(
+        timestamp="2026-06-09T14:41:00",
+        app_name="chrome.exe",
+        window_title="Rebuilding the 2016 Lakers — YouTube — Google Chrome",
+        category="distracting",
+        duration_seconds=600,
+    )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
 
     assert "## Browser Sites" in report_text
-    assert "1. github.com - 10m" in report_text
-    assert "2. youtube.com - 2m" in report_text
-    assert "## Context Tags" in report_text
-    assert "1. work - 25m" in report_text
-    assert "2. coding - 20m" in report_text
-    assert "## Charts" in report_text
-    assert "### Hourly Breakdown" in report_text
-    assert "- 09:00 27m" in report_text
-    assert "### Category Distribution" in report_text
-    assert "- productive: 25m" in report_text
-    assert "### Top Distracting Windows Over Time" in report_text
-    assert "YouTube - Google Chrome" in report_text
-    assert "## Focus Blocks" in report_text
-    assert "- Focus blocks completed: 2" in report_text
-    assert "- Interruptions: 1" in report_text
-    assert "- Average recovery after distraction: 2m" in report_text
-    assert "1. 09:12 - 09:27 on chrome.exe - 15m [work, coding, planning]" in report_text
-    assert "## Comparisons" in report_text
-    assert "### What Changed From Yesterday" in report_text
-    assert "- Productive time: down 5m" in report_text
-    assert "- Distracting time: down 3m" in report_text
-    assert "### Best Day This Week" in report_text
-    assert "- Best day: 2026-06-10 with 1h 10m productive time" in report_text
-    assert "- Gap to best day: 45m" in report_text
-    assert "Most distraction time came from github.com." not in report_text
-    assert "Your best day this week was 2026-06-10, ahead by 45m of productive time." in report_text
+    assert "YouTube — 10m, detected from window title because browser URL/domain data was unavailable." in report_text
+    assert "No browser activity with a recognizable site was detected." not in report_text
+
+
+def test_comparisons_avoid_misleading_best_day_claim_with_single_day_of_data(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    database.insert_activity(
+        timestamp="2026-06-09T09:00:00",
+        app_name="Code.exe",
+        window_title="Editor",
+        category="productive",
+        duration_seconds=600,
+    )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "No meaningful weekly comparison yet. More than one day of data is needed." in report_text
+    assert "Today is currently the strongest comparable day this week." not in report_text
+
+
+def test_focus_attempts_and_meaningful_focus_blocks_are_reported_separately(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(
+        database=database,
+        reports_dir=tmp_path / "reports",
+        meaningful_focus_block_seconds=5 * 60,
+    )
+
+    rows = [
+        ("2026-06-09T09:00:00", "Code.exe", "Editor", "productive", 120, ["work", "coding"], ""),
+        ("2026-06-09T09:03:00", "chrome.exe", "YouTube", "distracting", 60, [], ""),
+        ("2026-06-09T09:05:00", "Code.exe", "Editor", "productive", 360, ["work", "coding"], ""),
+    ]
+    for timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint in rows:
+        database.insert_activity(
+            timestamp=timestamp,
+            app_name=app_name,
+            window_title=window_title,
+            category=category,
+            duration_seconds=duration_seconds,
+            context_tags=context_tags,
+            site_hint=site_hint,
+        )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "Focus attempts: 2" in report_text
+    assert "Meaningful focus blocks: 1" in report_text
+    assert "Recent Focus Blocks:" in report_text
+
+
+def test_data_quality_warns_for_short_tracking_windows(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    rows = [
+        ("2026-06-09T14:41:00", "chrome.exe", "YouTube - Google Chrome", "distracting", 600, [], ""),
+        ("2026-06-09T14:53:00", "Codex.exe", "Codex", "unknown", 15, [], ""),
+        ("2026-06-09T14:54:00", "Code.exe", "Editor", "productive", 10, [], ""),
+    ]
+    for timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint in rows:
+        database.insert_activity(
+            timestamp=timestamp,
+            app_name=app_name,
+            window_title=window_title,
+            category=category,
+            duration_seconds=duration_seconds,
+            context_tags=context_tags,
+            site_hint=site_hint,
+        )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "## Data Quality" in report_text
+    assert "Total tracked time is short, so conclusions are preliminary." in report_text
+    assert "No previous day data is available." in report_text
+    assert "Browser domain detection appears unavailable." in report_text
+    assert "Context tags cover only a small part of tracked time." in report_text
+    assert "Unknown time exists." in report_text
+
+
+def test_recommendation_is_specific_and_measurable(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    rows = [
+        ("2026-06-09T14:41:00", "Code.exe", "Editor", "productive", 120, ["work", "coding"], ""),
+        ("2026-06-09T14:43:00", "chrome.exe", "YouTube - Google Chrome", "distracting", 600, [], ""),
+    ]
+    for timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint in rows:
+        database.insert_activity(
+            timestamp=timestamp,
+            app_name=app_name,
+            window_title=window_title,
+            category=category,
+            duration_seconds=duration_seconds,
+            context_tags=context_tags,
+            site_hint=site_hint,
+        )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "## Recommendation" in report_text
+    assert "Start with one 15-minute protected work block before opening browser tabs tied to YouTube." in report_text
+    assert "The next goal is one uninterrupted 10-minute Code.exe session." in report_text
