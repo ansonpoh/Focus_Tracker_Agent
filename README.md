@@ -38,6 +38,32 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Docker
+
+This repo now includes a container image and `docker-compose.yml`.
+
+Build and run it with:
+
+```powershell
+docker compose up --build
+```
+
+The compose setup mounts these folders so state persists across restarts:
+
+- `config/`
+- `data/`
+- `reports/`
+
+If you use Gmail delivery, keep your SMTP variables in `.env` and Compose will pass them into the container.
+
+Important limitation:
+
+- The tracker depends on Windows foreground-window APIs and interactive desktop notifications.
+- Inside a normal Docker container, especially on Linux, it cannot observe the host's active window in a useful way.
+- In that environment the app may still run, write fallback data, and generate reports, but live desktop tracking is not a realistic deployment target.
+
+So Docker is mainly useful here for packaging, running tests, and non-interactive/report-related workflows, not for full host desktop monitoring.
+
 ## Run At Startup
 
 This app can auto-start when the current Windows user signs in. It does not run before login because it depends on the interactive desktop session to read the foreground window and show notifications.
