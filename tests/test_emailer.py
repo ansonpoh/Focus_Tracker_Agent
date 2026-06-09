@@ -125,3 +125,56 @@ def test_build_email_html_renders_headings_and_table() -> None:
     assert "<h2" in html_body
     assert "<table" in html_body
     assert "Productive" in html_body
+    assert "Total tracked time" in html_body
+
+
+def test_build_email_html_renders_snapshot_as_table() -> None:
+    html_body = build_email_html(
+        "\n".join(
+            [
+                "# Focus Report - 2026-06-09",
+                "",
+                "## Snapshot",
+                "| Metric | Value |",
+                "| --- | --- |",
+                "| Total tracked time | 12m 15s |",
+                "| Focus score | 64/100 |",
+                "| Report confidence | 82/100 (High) |",
+                "| Productive | 2m — 16% |",
+            ]
+        ),
+        "focus-report.pdf",
+    )
+
+    assert "<table" in html_body
+    assert "Total tracked time" in html_body
+    assert "64/100" in html_body
+
+
+def test_build_email_html_renders_focus_sessions_as_table_and_bullets() -> None:
+    html_body = build_email_html(
+        "\n".join(
+            [
+                "# Focus Report - 2026-06-09",
+                "",
+                "## Focus Sessions",
+                "| Metric | Value |",
+                "| --- | --- |",
+                "| Focus attempts | 10 |",
+                "| Meaningful focus blocks | 0 |",
+                "| Longest sustained focus | 1m |",
+                "| Interruptions | 2 |",
+                "| Average recovery after distraction | 10m |",
+                "",
+                "Recent Focus Blocks:",
+                "- 15:23–15:23 — Code.exe — 5s",
+                "- 16:21–16:22 — Code.exe — 10s — work, coding",
+            ]
+        ),
+        "focus-report.pdf",
+    )
+
+    assert html_body.count("<table") >= 1
+    assert "Focus attempts" in html_body
+    assert "&bull; 15:23" in html_body
+    assert "&bull; 16:21" in html_body

@@ -31,6 +31,7 @@ This is a local Windows background agent that samples the foreground window ever
 4. `nudger.py` checks recent usage patterns and shows desktop notifications.
 5. `reporter.py` builds daily, weekly, and monthly Markdown reports, including focus blocks and interruption metrics.
 6. `main.py` runs the loop, handles shutdown, and triggers the final report.
+   If Windows shutdown interrupts email delivery, the agent leaves a local retry marker and resends that final report on the next startup.
 
 ## Setup
 
@@ -206,4 +207,6 @@ Your strongest focus period was in the morning. Schedule coding or deep work bef
 
 - `data/focus_tracker.db`: raw activity, nudges, and daily summaries
 - `data/focus_tracker.log`: rotating runtime log for startup, report delivery, cleanup, and warning events
+- `data/emailed_report_receipts.json`: local email-delivery receipts used to avoid resending the same report date
+- `data/pending_final_report.json`: retry marker used when a shutdown-time final report could not be fully delivered
 - `reports/*.pdf`: generated when a report is rendered for email attachment

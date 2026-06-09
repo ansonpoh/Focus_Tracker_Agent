@@ -26,6 +26,8 @@ RULES_PATH = CONFIG_DIR / "rules.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 DATABASE_PATH = DATA_DIR / "focus_tracker.db"
 LOG_PATH = DATA_DIR / "focus_tracker.log"
+PENDING_FINAL_REPORT_PATH = DATA_DIR / "pending_final_report.json"
+EMAILED_REPORT_RECEIPTS_PATH = DATA_DIR / "emailed_report_receipts.json"
 
 
 DEFAULT_SETTINGS = {
@@ -238,11 +240,117 @@ def build_emailer(settings: dict) -> ReportEmailer:
     )
 
 
-def deliver_report(reporter: DailyReporter, emailer: ReportEmailer, report_date: str) -> Path:
+def load_emailed_report_receipts(path: Path | None = None) -> set[str]:
+    target_path = path or EMAILED_REPORT_RECEIPTS_PATH
+    if not target_path.exists():
+        return set()
+
+    try:
+        payload = json.loads(target_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return set()
+
+    if not isinstance(payload, list):
+        return set()
+
+    return {item for item in payload if isinstance(item, str) and item}
+
+
+def mark_report_emailed(report_date: str, path: Path | None = None) -> None:
+    target_path = path or EMAILED_REPORT_RECEIPTS_PATH
+    receipts = load_emailed_report_receipts(target_path)
+    if report_date in receipts:
+        return
+
+    receipts.add(report_date)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(json.dumps(sorted(receipts), indent=2), encoding="utf-8")
+
+
+def should_email_report(report_date: str, path: Path | None = None) -> bool:
+    return report_date not in load_emailed_report_receipts(path)
+
+
+def deliver_report(
+    reporter: DailyReporter,
+    emailer: ReportEmailer,
+    report_date: str,
+    logger: logging.Logger | None = None,
+    receipts_path: Path | None = None,
+) -> Path:
     report_path = reporter.generate_daily_report(report_date)
     reporter.generate_weekly_report(report_date)
     reporter.generate_monthly_report(report_date)
-    emailer.send_report(report_path)
+    if should_email_report(report_date, receipts_path):
+        emailer.send_report(report_path)
+        mark_report_emailed(report_date, receipts_path)
+    elif logger is not None and emailer.is_configured():
+        logger.info("Skipping duplicate email delivery for report date: %s", report_date)
+    return report_path
+
+
+def mark_pending_final_report(report_date: str, path: Path = PENDING_FINAL_REPORT_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "report_date": report_date,
+        "created_at": datetime.now().replace(microsecond=0).isoformat(),
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_pending_final_report(path: Path = PENDING_FINAL_REPORT_PATH) -> dict | None:
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    report_date = payload.get("report_date")
+    created_at = payload.get("created_at")
+    if not isinstance(report_date, str) or not report_date:
+        return None
+    if created_at is not None and not isinstance(created_at, str):
+        return None
+
+    return {
+        "report_date": report_date,
+        "created_at": created_at or "",
+    }
+
+
+def clear_pending_final_report(path: Path = PENDING_FINAL_REPORT_PATH) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def retry_pending_final_report(
+    reporter: DailyReporter,
+    emailer: ReportEmailer,
+    logger: logging.Logger,
+    path: Path = PENDING_FINAL_REPORT_PATH,
+) -> Path | None:
+    pending_report = load_pending_final_report(path)
+    if pending_report is None:
+        return None
+
+    report_date = str(pending_report["report_date"])
+    try:
+        report_path = deliver_report(reporter, emailer, report_date, logger)
+    except Exception:
+        logger.warning(
+            "Retry for pending final report dated %s failed; keeping retry marker.",
+            report_date,
+            exc_info=True,
+        )
+        return None
+
+    clear_pending_final_report(path)
+    logger.info("Recovered pending final report delivery for: %s", report_date)
     return report_path
 
 
@@ -274,7 +382,7 @@ def schedule_daily_report(
     def _run_report() -> None:
         report_date = datetime.now().date().isoformat()
         try:
-            report_path = deliver_report(reporter, emailer, report_date)
+            report_path = deliver_report(reporter, emailer, report_date, logger)
             logger.info("Report written to: %s", report_path)
             if emailer.is_configured():
                 logger.info("Report emailed to: %s", emailer.settings.recipient)
@@ -301,6 +409,7 @@ def main() -> None:
     reporter = DailyReporter(database=database, reports_dir=REPORTS_DIR)
     emailer = build_emailer(settings)
 
+    retry_pending_final_report(reporter, emailer, logger)
     run_retention_cleanup(database, int(settings["raw_activity_retention_days"]), logger)
     schedule_daily_report(
         reporter,
@@ -339,8 +448,11 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Stopping tracker and generating final report...")
     finally:
+        final_report_date = datetime.now().date().isoformat()
+        mark_pending_final_report(final_report_date)
         try:
-            report_path = deliver_report(reporter, emailer, datetime.now().date().isoformat())
+            report_path = deliver_report(reporter, emailer, final_report_date, logger)
+            clear_pending_final_report()
             logger.info("Report written to: %s", report_path)
             if emailer.is_configured():
                 logger.info("Report emailed to: %s", emailer.settings.recipient)

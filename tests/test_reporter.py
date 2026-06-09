@@ -97,9 +97,11 @@ def test_daily_report_outputs_percentages_and_tables(tmp_path) -> None:
 
     report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
 
-    assert "Productive: 2m — 16%" in report_text
-    assert "Distracting: 10m — 82%" in report_text
-    assert "Unknown: 15s — 2%" in report_text
+    assert "## Snapshot" in report_text
+    assert "| Metric | Value |" in report_text
+    assert "| Productive | 2m — 16% |" in report_text
+    assert "| Distracting | 10m — 82% |" in report_text
+    assert "| Unknown | 15s — 2% |" in report_text
     assert "## Time Breakdown" in report_text
     assert "| Category | Time | Share |" in report_text
     assert "| Productive | 2m | 16% |" in report_text
@@ -172,9 +174,13 @@ def test_focus_attempts_and_meaningful_focus_blocks_are_reported_separately(tmp_
 
     report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
 
-    assert "Focus attempts: 2" in report_text
-    assert "Meaningful focus blocks: 1" in report_text
+    assert "## Focus Sessions" in report_text
+    assert "| Metric | Value |" in report_text
+    assert "| Focus attempts | 2 |" in report_text
+    assert "| Meaningful focus blocks | 1 |" in report_text
     assert "Recent Focus Blocks:" in report_text
+    assert "- 09:00–09:02 — Code.exe — 2m — work, coding" in report_text
+    assert "- 09:05–09:11 — Code.exe — 6m — work, coding" in report_text
 
 
 def test_data_quality_warns_for_short_tracking_windows(tmp_path) -> None:

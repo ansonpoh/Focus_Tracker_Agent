@@ -57,30 +57,41 @@ def build_report_text(
         f"# {label}",
         "",
         "## Snapshot",
-        f"Total tracked time: {format_duration(totals['total_seconds'])}",
-        f"Focus score: {focus_score}/100",
-        f"Report confidence: {confidence_score}/100 ({confidence_label(confidence_score)})",
-        f"Productive: {format_duration_share(totals['productive_seconds'], totals['total_seconds'])}",
-        f"Distracting: {format_duration_share(totals['distracting_seconds'], totals['total_seconds'])}",
-        f"Neutral: {format_duration_share(totals['neutral_seconds'], totals['total_seconds'])}",
-        f"Unknown: {format_duration_share(totals['unknown_seconds'], totals['total_seconds'])}",
-        f"App/window switches: {switch_count}",
-        f"Longest focus session: {format_duration(longest_session_seconds)}" if longest_session_seconds > 0 else "Longest focus session: 0s",
-        "",
-        "## Main Finding",
-        main_finding,
-        "",
-        "## Time Breakdown",
-        *markdown_table(
-            ["Category", "Time", "Share"],
-            [
-                [name, format_duration(value), f"{percentage_of_total(value, totals['total_seconds'])}%"]
-                for name, value in category_distribution(totals)
-            ],
-        ),
-        "",
-        "## Top Apps",
     ]
+    snapshot_rows = [
+        ["Metric", "Value"],
+        ["Total tracked time", format_duration(totals["total_seconds"])],
+        ["Focus score", f"{focus_score}/100"],
+        ["Report confidence", f"{confidence_score}/100 ({confidence_label(confidence_score)})"],
+        ["Productive", format_duration_share(totals["productive_seconds"], totals["total_seconds"])],
+        ["Distracting", format_duration_share(totals["distracting_seconds"], totals["total_seconds"])],
+        ["Neutral", format_duration_share(totals["neutral_seconds"], totals["total_seconds"])],
+        ["Unknown", format_duration_share(totals["unknown_seconds"], totals["total_seconds"])],
+        ["App/window switches", str(switch_count)],
+        [
+            "Longest focus session",
+            format_duration(longest_session_seconds) if longest_session_seconds > 0 else "0s",
+        ],
+    ]
+    report_lines.extend(
+        markdown_table(snapshot_rows[0], snapshot_rows[1:])
+        + [
+            "",
+            "## Main Finding",
+            main_finding,
+            "",
+            "## Time Breakdown",
+            *markdown_table(
+                ["Category", "Time", "Share"],
+                [
+                    [name, format_duration(value), f"{percentage_of_total(value, totals['total_seconds'])}%"]
+                    for name, value in category_distribution(totals)
+                ],
+            ),
+            "",
+            "## Top Apps",
+        ]
+    )
 
     if top_apps:
         report_lines.extend(
@@ -123,24 +134,31 @@ def build_report_text(
         [
             "",
             "## Focus Sessions",
-            f"Focus attempts: {len(focus_blocks)}",
-            f"Meaningful focus blocks: {meaningful_blocks}",
-            f"Longest sustained focus: {format_duration(longest_session_seconds)}" if longest_session_seconds > 0 else "Longest sustained focus: 0s",
-            f"Interruptions: {interruptions}",
         ]
     )
+    focus_session_rows = [
+        ["Metric", "Value"],
+        ["Focus attempts", str(len(focus_blocks))],
+        ["Meaningful focus blocks", str(meaningful_blocks)],
+        [
+            "Longest sustained focus",
+            format_duration(longest_session_seconds) if longest_session_seconds > 0 else "0s",
+        ],
+        ["Interruptions", str(interruptions)],
+    ]
     if recovery_seconds:
         average_recovery = sum(recovery_seconds) // len(recovery_seconds)
-        report_lines.append(f"Average recovery after distraction: {format_duration(average_recovery)}")
+        focus_session_rows.append(["Average recovery after distraction", format_duration(average_recovery)])
     else:
-        report_lines.append("Average recovery after distraction: n/a")
+        focus_session_rows.append(["Average recovery after distraction", "n/a"])
+    report_lines.extend(markdown_table(focus_session_rows[0], focus_session_rows[1:]))
 
     if focus_blocks:
         report_lines.extend(["", "Recent Focus Blocks:"])
         for block in sorted(focus_blocks, key=lambda item: item.start)[-recent_focus_block_limit:]:
             tag_text = f" \u2014 {', '.join(block.context_tags)}" if block.context_tags else ""
             report_lines.append(
-                f"{block.start.strftime('%H:%M')}\u2013{block.end.strftime('%H:%M')} \u2014 "
+                f"- {block.start.strftime('%H:%M')}\u2013{block.end.strftime('%H:%M')} \u2014 "
                 f"{block.primary_app} \u2014 {format_duration(block.duration_seconds)}{tag_text}"
             )
     else:
