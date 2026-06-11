@@ -88,6 +88,7 @@ def test_send_report_attaches_pdf_instead_of_markdown(tmp_path, monkeypatch) -> 
 
     assert sent["login"] == ("sender@example.com", "secret")
     assert sent["starttls"] is True
+    assert message["Subject"] == "Focus Report - 2026-06-09"
     assert "Your focus report is attached as a PDF for easier reading." in message.get_body(preferencelist=("plain",)).get_content()
     assert html_body is not None
     assert "<html>" in html_body.get_content()

@@ -460,6 +460,17 @@ def context_coverage_ratio(rows: list[dict[str, Any]], total_seconds: int) -> fl
     return covered_seconds / total_seconds
 
 
+def provisional_classification_ratio(rows: list[dict[str, Any]], total_seconds: int) -> float:
+    if total_seconds <= 0:
+        return 0.0
+
+    provisional_seconds = 0
+    for row in rows:
+        if bool(row.get("classification_provisional")):
+            provisional_seconds += int(row.get("duration_seconds") or 0)
+    return provisional_seconds / total_seconds
+
+
 def calculate_focus_score(
     *,
     totals: dict[str, int],
@@ -520,6 +531,9 @@ def data_quality_warnings(
     if totals["unknown_seconds"] > 0:
         warnings.append("Unknown time exists.")
 
+    if provisional_classification_ratio(rows, totals["total_seconds"]) > 0:
+        warnings.append("Provisional classifications exist.")
+
     return warnings
 
 
@@ -537,6 +551,9 @@ def report_confidence_score(*, totals: dict[str, int], quality_warnings: list[st
     if "Unknown time exists." in quality_warnings:
         unknown_ratio = totals["unknown_seconds"] / max(totals["total_seconds"], 1)
         score -= 15 if unknown_ratio < 0.25 else 30
+    if "Provisional classifications exist." in quality_warnings:
+        provisional_ratio = provisional_classification_ratio(rows, totals["total_seconds"])
+        score -= 8 if provisional_ratio < 0.25 else 15
     if "No previous day data is available." in quality_warnings:
         score -= 10
     return max(0, min(100, score))

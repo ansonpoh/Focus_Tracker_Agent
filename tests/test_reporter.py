@@ -39,10 +39,10 @@ def test_weekly_report_aggregates_multiple_days(tmp_path) -> None:
 
     assert report_path.name == "focus-report-week-2026-06-08.md"
     assert "# Focus Report — Week of 2026-06-08" in report_text
-    assert "Total tracked time: 17m" in report_text
-    assert "Productive: 10m — 59%" in report_text
-    assert "Distracting: 5m — 29%" in report_text
-    assert "Neutral: 2m — 12%" in report_text
+    assert "| Total tracked time | 17m |" in report_text
+    assert "| Productive | 10m — 59% |" in report_text
+    assert "| Distracting | 5m — 29% |" in report_text
+    assert "| Neutral | 2m — 12% |" in report_text
 
 
 def test_monthly_report_uses_month_boundaries(tmp_path) -> None:
@@ -70,8 +70,8 @@ def test_monthly_report_uses_month_boundaries(tmp_path) -> None:
 
     assert report_path.name == "focus-report-month-2026-06.md"
     assert "# Focus Report — 2026-06" in report_text
-    assert "Total tracked time: 15m" in report_text
-    assert "Neutral: 0s — 0%" in report_text
+    assert "| Total tracked time | 15m |" in report_text
+    assert "| Neutral | 0s — 0% |" in report_text
 
 
 def test_daily_report_outputs_percentages_and_tables(tmp_path) -> None:
@@ -214,6 +214,32 @@ def test_data_quality_warns_for_short_tracking_windows(tmp_path) -> None:
     assert "Unknown time exists." in report_text
 
 
+def test_provisional_classifications_warn_without_counting_as_unknown(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    database.insert_activity(
+        timestamp="2026-06-09T10:00:00",
+        app_name="UnknownApp.exe",
+        window_title="Mystery Tool",
+        category="neutral",
+        duration_seconds=600,
+        context_tags=["general"],
+        site_hint="",
+        classification_confidence=0.2,
+        classification_source="fallback",
+        classification_provisional=True,
+        classification_reason="missing key",
+        classification_fingerprint="fp",
+    )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "Provisional classifications exist." in report_text
+    assert "Unknown time exists." not in report_text
+
+
 def test_recommendation_is_specific_and_measurable(tmp_path) -> None:
     database = FocusDatabase(tmp_path / "focus.db")
     database.initialize()
@@ -237,7 +263,7 @@ def test_recommendation_is_specific_and_measurable(tmp_path) -> None:
     report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
 
     assert "## Recommendation" in report_text
-    assert "Report confidence:" in report_text
+    assert "| Report confidence |" in report_text
     assert "Treat today's recommendation as provisional." in report_text
     assert "before changing your routine based on this report." in report_text
 
@@ -269,7 +295,7 @@ def test_high_confidence_report_keeps_specific_recommendation(tmp_path) -> None:
 
     report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
 
-    assert "Report confidence: 100/100 (High)" in report_text
+    assert "| Report confidence | 100/100 (High) |" in report_text
     assert "Treat today's recommendation as provisional." not in report_text
     assert "Repeat yesterday's opening work pattern earlier in the day." in report_text
     assert "The next goal is one uninterrupted 35m focus block." in report_text

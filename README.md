@@ -13,7 +13,7 @@ This is a local Windows background agent that samples the foreground window ever
 - Sends non-invasive desktop nudges when behavior patterns suggest distraction or frequent switching.
 - Generates daily, weekly, and monthly Markdown reports in `reports/`.
 - Adds a confidence score to each report so low-quality data does not drive overconfident recommendations.
-- Can optionally email the daily report through Gmail SMTP.
+- Can optionally email daily, weekly, and monthly reports through Gmail SMTP.
 
 ## Privacy boundaries
 
@@ -25,13 +25,12 @@ This is a local Windows background agent that samples the foreground window ever
 ## How it works
 
 1. `observer.py` reads the current foreground window using Windows APIs via `ctypes`.
-2. `classifier.py` applies the rules from `config/rules.json`.
+2. `classifier.py` applies local heuristics from `config/rules.json`, then the dynamic classifier reuses learned labels or calls the OpenAI Responses API for unseen apps when enabled.
 3. `database.py` stores activity, browser site hints, context tags, and nudges in `data/focus_tracker.db`.
    It also applies schema migrations automatically and can purge old raw activity rows based on retention settings.
 4. `nudger.py` checks recent usage patterns and shows desktop notifications.
 5. `reporter.py` builds daily, weekly, and monthly Markdown reports, including focus blocks and interruption metrics.
-6. `main.py` runs the loop, handles shutdown, and triggers the final report.
-   If Windows shutdown interrupts email delivery, the agent leaves a local retry marker and resends that final report on the next startup.
+6. `main.py` runs the loop, schedules report delivery, and performs startup catch-up for missed sends.
 
 ## Setup
 
@@ -100,6 +99,7 @@ You can also disable or inspect it in Windows Task Scheduler under the task name
 Edit this file to change classification behavior:
 
 - `productive_apps` matches by exact process name.
+- `distracting_apps` matches by exact process name.
 - `neutral_apps` matches by exact process name.
 - `browser_apps` defines which processes should use browser-specific site/domain matching.
 - `productive_domains`, `neutral_domains`, and `distracting_domains` classify known sites more explicitly than title keywords alone.
@@ -117,10 +117,41 @@ This file controls runtime behavior:
 - `nudge_cooldown_minutes`
 - `raw_activity_retention_days`
 - `nudge_thresholds`
-- `daily_report_time`
+- `scheduled_delivery_time`
 - `email_reports`
+- `classifier`
 
 `raw_activity_retention_days` controls how long raw per-sample activity rows are kept before automatic cleanup.
+`scheduled_delivery_time` controls when the app sends the previous day's report, plus any due weekly or monthly summary email.
+
+`classifier` controls the dynamic categorisation layer:
+
+- `enabled`
+- `mode`
+- `model`
+- `api_base_url`
+- `api_key_env`
+- `api_timeout_seconds`
+- `request_max_retries`
+- `min_confidence_threshold`
+- `reuse_provisional`
+- `max_output_tokens`
+
+Set `OPENAI_API_KEY` in your environment or `.env` if you want the tracker to classify new apps with the OpenAI API instead of falling back to provisional neutral labels.
+
+### Classification Review Workflow
+
+Review recent low-confidence or provisional learned labels:
+
+```powershell
+python classification_admin.py list-review
+```
+
+Save a correction that always overrides future automatic classification:
+
+```powershell
+python classification_admin.py override --scope app --key spotify.exe --category distracting --tags music
+```
 
 ### Gmail delivery
 
@@ -157,7 +188,7 @@ FOCUS_TRACKER_EMAIL_USERNAME=your-gmail-address@gmail.com
 FOCUS_TRACKER_EMAIL_PASSWORD=your-gmail-app-password
 ```
 
-Use a Gmail app password, not your normal Google account password. Once enabled, the agent still writes the local Markdown file and also emails the report body, with a rendered PDF attached by default.
+Use a Gmail app password, not your normal Google account password. Once enabled, the agent still writes the local Markdown file and emails the due daily, weekly, and monthly reports with a rendered PDF attached by default.
 
 ## Sample report
 
@@ -207,6 +238,5 @@ Your strongest focus period was in the morning. Schedule coding or deep work bef
 
 - `data/focus_tracker.db`: raw activity, nudges, and daily summaries
 - `data/focus_tracker.log`: rotating runtime log for startup, report delivery, cleanup, and warning events
-- `data/emailed_report_receipts.json`: local email-delivery receipts used to avoid resending the same report date
-- `data/pending_final_report.json`: retry marker used when a shutdown-time final report could not be fully delivered
+- `data/emailed_report_receipts.json`: local delivery receipts used to avoid resending the same daily, weekly, or monthly period
 - `reports/*.pdf`: generated when a report is rendered for email attachment

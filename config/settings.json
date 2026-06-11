@@ -8,7 +8,7 @@
     "switch_window_minutes": 10,
     "productive_minutes_threshold": 45
   },
-  "daily_report_time": "22:00",
+  "scheduled_delivery_time": "08:00",
   "email_reports": {
     "enabled": true,
     "smtp_server": "smtp.gmail.com",
@@ -19,5 +19,17 @@
     "password_env": "FOCUS_TRACKER_EMAIL_PASSWORD",
     "use_tls": true,
     "attach_report_file": true
+  },
+  "classifier": {
+    "enabled": true,
+    "mode": "hybrid",
+    "model": "gpt-5-mini",
+    "api_base_url": "https://api.openai.com/v1/responses",
+    "api_key_env": "OPENAI_API_KEY",
+    "api_timeout_seconds": 10,
+    "request_max_retries": 1,
+    "min_confidence_threshold": 0.75,
+    "reuse_provisional": true,
+    "max_output_tokens": 300
   }
 }

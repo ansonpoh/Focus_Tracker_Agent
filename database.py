@@ -72,6 +72,55 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
         ALTER TABLE activity_log ADD COLUMN site_hint TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        4,
+        """
+        ALTER TABLE activity_log ADD COLUMN classification_confidence REAL NOT NULL DEFAULT 0;
+        ALTER TABLE activity_log ADD COLUMN classification_source TEXT NOT NULL DEFAULT 'legacy';
+        ALTER TABLE activity_log ADD COLUMN classification_provisional INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE activity_log ADD COLUMN classification_reason TEXT NOT NULL DEFAULT '';
+        ALTER TABLE activity_log ADD COLUMN classification_fingerprint TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS classification_memory (
+            match_scope TEXT NOT NULL,
+            match_key TEXT NOT NULL,
+            app_name TEXT NOT NULL,
+            site_hint TEXT NOT NULL,
+            normalized_title TEXT NOT NULL,
+            category TEXT NOT NULL,
+            context_tags TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            source TEXT NOT NULL,
+            provisional INTEGER NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            hit_count INTEGER NOT NULL DEFAULT 1,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            PRIMARY KEY (match_scope, match_key)
+        );
+        """,
+    ),
+    (
+        6,
+        """
+        CREATE TABLE IF NOT EXISTS classification_overrides (
+            match_scope TEXT NOT NULL,
+            match_key TEXT NOT NULL,
+            category TEXT NOT NULL,
+            context_tags TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'override',
+            provisional INTEGER NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (match_scope, match_key)
+        );
+        """,
+    ),
 ]
 
 
@@ -200,13 +249,20 @@ class FocusDatabase:
         duration_seconds: int,
         context_tags: list[str] | None = None,
         site_hint: str = "",
+        classification_confidence: float = 0.0,
+        classification_source: str = "legacy",
+        classification_provisional: bool = False,
+        classification_reason: str = "",
+        classification_fingerprint: str = "",
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO activity_log (
-                    timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint,
+                    classification_confidence, classification_source, classification_provisional,
+                    classification_reason, classification_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     timestamp,
@@ -216,6 +272,11 @@ class FocusDatabase:
                     int(duration_seconds),
                     json.dumps(context_tags or []),
                     site_hint or "",
+                    float(classification_confidence),
+                    classification_source or "legacy",
+                    1 if classification_provisional else 0,
+                    classification_reason or "",
+                    classification_fingerprint or "",
                 ),
             )
 
@@ -267,7 +328,19 @@ class FocusDatabase:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT timestamp, app_name, window_title, category, duration_seconds, context_tags, site_hint
+                SELECT
+                    timestamp,
+                    app_name,
+                    window_title,
+                    category,
+                    duration_seconds,
+                    context_tags,
+                    site_hint,
+                    classification_confidence,
+                    classification_source,
+                    classification_provisional,
+                    classification_reason,
+                    classification_fingerprint
                 FROM activity_log
                 WHERE timestamp >= ? AND timestamp < ?
                 ORDER BY timestamp ASC, id ASC
@@ -407,3 +480,135 @@ class FocusDatabase:
                 (_iso(cutoff),),
             )
             return int(cursor.rowcount or 0)
+
+    def get_classification_memory(self, scope: str, key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT match_scope, match_key, app_name, site_hint, normalized_title, category,
+                       context_tags, confidence, source, provisional, reason, hit_count, first_seen, last_seen
+                FROM classification_memory
+                WHERE match_scope = ? AND match_key = ?
+                """,
+                (scope, key),
+            ).fetchone()
+        return _row_to_dict(row) if row is not None else None
+
+    def upsert_classification_memory(
+        self,
+        *,
+        scope: str,
+        key: str,
+        app_name: str,
+        site_hint: str,
+        normalized_title: str,
+        category: str,
+        context_tags: list[str],
+        confidence: float,
+        source: str,
+        provisional: bool,
+        reason: str,
+    ) -> None:
+        timestamp = _iso(datetime.now())
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO classification_memory (
+                    match_scope, match_key, app_name, site_hint, normalized_title, category,
+                    context_tags, confidence, source, provisional, reason, hit_count, first_seen, last_seen
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(match_scope, match_key) DO UPDATE SET
+                    app_name = excluded.app_name,
+                    site_hint = excluded.site_hint,
+                    normalized_title = excluded.normalized_title,
+                    category = excluded.category,
+                    context_tags = excluded.context_tags,
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    provisional = excluded.provisional,
+                    reason = excluded.reason,
+                    hit_count = classification_memory.hit_count + 1,
+                    last_seen = excluded.last_seen
+                """,
+                (
+                    scope,
+                    key,
+                    app_name,
+                    site_hint,
+                    normalized_title,
+                    category,
+                    json.dumps(context_tags or []),
+                    float(confidence),
+                    source,
+                    1 if provisional else 0,
+                    reason or "",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def get_classification_override(self, scope: str, key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT match_scope, match_key, category, context_tags, confidence, source, provisional, reason, updated_at
+                FROM classification_overrides
+                WHERE match_scope = ? AND match_key = ?
+                """,
+                (scope, key),
+            ).fetchone()
+        return _row_to_dict(row) if row is not None else None
+
+    def upsert_classification_override(
+        self,
+        *,
+        scope: str,
+        key: str,
+        category: str,
+        context_tags: list[str],
+        reason: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO classification_overrides (
+                    match_scope, match_key, category, context_tags, confidence, source, provisional, reason, updated_at
+                ) VALUES (?, ?, ?, ?, 1, 'override', 0, ?, ?)
+                ON CONFLICT(match_scope, match_key) DO UPDATE SET
+                    category = excluded.category,
+                    context_tags = excluded.context_tags,
+                    confidence = excluded.confidence,
+                    source = excluded.source,
+                    provisional = excluded.provisional,
+                    reason = excluded.reason,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    scope,
+                    key,
+                    category,
+                    json.dumps(context_tags or []),
+                    reason or "",
+                    _iso(datetime.now()),
+                ),
+            )
+
+    def list_classification_review_candidates(
+        self,
+        *,
+        limit: int = 20,
+        confidence_threshold: float = 0.75,
+    ) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT match_scope, match_key, app_name, site_hint, normalized_title, category,
+                       context_tags, confidence, source, provisional, reason, hit_count, first_seen, last_seen
+                FROM classification_memory
+                WHERE provisional = 1 OR confidence < ?
+                ORDER BY provisional DESC, confidence ASC, last_seen DESC
+                LIMIT ?
+                """,
+                (float(confidence_threshold), int(limit)),
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]

@@ -6,6 +6,15 @@ from pathlib import Path
 import json
 import re
 
+BROWSER_TITLE_SUFFIXES = (
+    " - google chrome",
+    " - chrome",
+    " - microsoft edge",
+    " - mozilla firefox",
+    " - firefox",
+    " - brave",
+)
+
 
 DEFAULT_RULES: dict[str, object] = {
     "productive_apps": [
@@ -16,6 +25,12 @@ DEFAULT_RULES: dict[str, object] = {
         "obsidian.exe",
         "excel.exe",
         "winword.exe",
+        "Codex.exe",
+    ],
+    "distracting_apps": [
+        "SlayTheSpire2.exe",
+        "NBA2K26.exe",
+        "Spotify.exe",
     ],
     "distracting_keywords": [
         "youtube",
@@ -25,6 +40,9 @@ DEFAULT_RULES: dict[str, object] = {
         "netflix",
         "valorant",
         "steam",
+        "twitch",
+        "wordle",
+        "connections",
     ],
     "productive_keywords": [
         "github",
@@ -35,6 +53,7 @@ DEFAULT_RULES: dict[str, object] = {
         "localhost",
         "portfolio",
         "resume",
+        "chatgpt",
     ],
     "neutral_apps": [
         "explorer.exe",
@@ -67,11 +86,15 @@ DEFAULT_RULES: dict[str, object] = {
         "netflix.com",
         "x.com",
         "twitter.com",
+        "twitch.tv",
+        "nytimes.com",
     ],
     "neutral_domains": [
         "mail.google.com",
         "calendar.google.com",
         "drive.google.com",
+        "chess.com",
+        "chatgpt.com",
     ],
     "domain_aliases": {
         "github": "github.com",
@@ -86,6 +109,13 @@ DEFAULT_RULES: dict[str, object] = {
         "twitter": "twitter.com",
         "x ": "x.com",
         "x.com": "x.com",
+        "twitch": "twitch.tv",
+        "chatgpt": "chatgpt.com",
+        "chess.com": "chess.com",
+        "chess": "chess.com",
+        "wordle": "nytimes.com",
+        "connections": "nytimes.com",
+        "new york times": "nytimes.com",
         "gmail": "mail.google.com",
         "google calendar": "calendar.google.com",
         "calendar": "calendar.google.com",
@@ -103,9 +133,13 @@ DEFAULT_RULES: dict[str, object] = {
         "obsidian.exe": ["study", "notes"],
         "excel.exe": ["work", "analysis"],
         "winword.exe": ["work", "writing"],
+        "codex.exe": ["work", "ai_tool"],
         "discord.exe": ["communication"],
         "telegram.exe": ["communication"],
         "whatsapp.exe": ["communication"],
+        "slaythespire2.exe": ["game"],
+        "nba2k26.exe": ["game", "sports"],
+        "spotify.exe": ["music"],
     },
     "keyword_context_tags": {
         "documentation": ["work", "research"],
@@ -115,6 +149,7 @@ DEFAULT_RULES: dict[str, object] = {
         "portfolio": ["job_search", "writing"],
         "resume": ["job_search", "writing"],
         "stackoverflow": ["work", "research"],
+        "chatgpt": ["work", "ai_tool"],
     },
     "domain_context_tags": {
         "github.com": ["work", "coding"],
@@ -131,6 +166,10 @@ DEFAULT_RULES: dict[str, object] = {
         "reddit.com": ["social"],
         "instagram.com": ["social"],
         "localhost": ["work", "testing"],
+        "twitch.tv": ["video", "streaming"],
+        "chatgpt.com": ["work", "ai_tool"],
+        "chess.com": ["game", "learning"],
+        "nytimes.com": ["game", "news"],
     },
 }
 
@@ -140,6 +179,22 @@ class ClassificationResult:
     category: str
     context_tags: list[str]
     site_hint: str = ""
+    confidence: float = 0.0
+    source: str = "unknown"
+    provisional: bool = False
+    reason: str = ""
+    fingerprint: str = ""
+
+
+@dataclass(frozen=True)
+class NormalizedActivity:
+    app_name: str
+    window_title: str
+    normalized_app_name: str
+    normalized_title: str
+    site_hint: str
+    fingerprint: str
+    is_browser_app: bool
 
 
 class RuleBasedClassifier:
@@ -188,6 +243,7 @@ class RuleBasedClassifier:
 
     def _refresh_matchers(self) -> None:
         self.productive_apps = {str(value).lower() for value in self.rules["productive_apps"]}
+        self.distracting_apps = {str(value).lower() for value in self.rules["distracting_apps"]}
         self.distracting_keywords = [str(value).lower() for value in self.rules["distracting_keywords"]]
         self.productive_keywords = [str(value).lower() for value in self.rules["productive_keywords"]]
         self.neutral_apps = {str(value).lower() for value in self.rules["neutral_apps"]}
@@ -216,6 +272,9 @@ class RuleBasedClassifier:
             if isinstance(value, list)
         }
 
+    def is_browser_app(self, app_name: str | None) -> bool:
+        return (app_name or "").strip().lower() in self.browser_apps
+
     def _domain_matches(self, site_hint: str, candidates: set[str]) -> bool:
         if not site_hint:
             return False
@@ -240,6 +299,41 @@ class RuleBasedClassifier:
                 return domain
 
         return ""
+
+    def _normalize_title(self, title: str) -> str:
+        normalized = title.strip().lower()
+        normalized = re.sub(r"^\(\d+\)\s*", "", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        for suffix in BROWSER_TITLE_SUFFIXES:
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        return normalized.strip(" |-")
+
+    def normalize_activity(self, app_name: str | None, window_title: str | None) -> NormalizedActivity:
+        app = (app_name or "").strip()
+        title = (window_title or "").strip()
+        normalized_app = app.lower()
+        normalized_title = self._normalize_title(title)
+        site_hint = self._extract_site_hint(normalized_app, normalized_title)
+        fingerprint = json.dumps(
+            {
+                "app": normalized_app,
+                "site": site_hint,
+                "title": normalized_title,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return NormalizedActivity(
+            app_name=app,
+            window_title=title,
+            normalized_app_name=normalized_app,
+            normalized_title=normalized_title,
+            site_hint=site_hint,
+            fingerprint=fingerprint,
+            is_browser_app=normalized_app in self.browser_apps,
+        )
 
     def _collect_context_tags(self, app: str, title: str, site_hint: str) -> list[str]:
         tags: list[str] = []
@@ -272,33 +366,112 @@ class RuleBasedClassifier:
 
         return tags
 
-    def classify(self, app_name: str | None, window_title: str | None) -> ClassificationResult:
-        app = (app_name or "").strip().lower()
-        title = (window_title or "").strip().lower()
-        site_hint = self._extract_site_hint(app, title)
+    def classify_activity(self, activity: NormalizedActivity) -> ClassificationResult:
+        app = activity.normalized_app_name
+        title = activity.normalized_title
+        site_hint = activity.site_hint
+        tags = self._collect_context_tags(app, title, site_hint)
 
         if app in self.productive_apps:
-            return ClassificationResult("productive", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "productive",
+                tags,
+                site_hint,
+                confidence=0.98,
+                source="heuristic",
+                reason="Matched productive app rule.",
+                fingerprint=activity.fingerprint,
+            )
+
+        if app in self.distracting_apps:
+            return ClassificationResult(
+                "distracting",
+                tags,
+                site_hint,
+                confidence=0.98,
+                source="heuristic",
+                reason="Matched distracting app rule.",
+                fingerprint=activity.fingerprint,
+            )
 
         if self._domain_matches(site_hint, self.distracting_domains):
-            return ClassificationResult("distracting", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "distracting",
+                tags,
+                site_hint,
+                confidence=0.94,
+                source="heuristic",
+                reason="Matched distracting domain rule.",
+                fingerprint=activity.fingerprint,
+            )
 
         if self._domain_matches(site_hint, self.productive_domains):
-            return ClassificationResult("productive", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "productive",
+                tags,
+                site_hint,
+                confidence=0.94,
+                source="heuristic",
+                reason="Matched productive domain rule.",
+                fingerprint=activity.fingerprint,
+            )
 
         if self._domain_matches(site_hint, self.neutral_domains):
-            return ClassificationResult("neutral", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "neutral",
+                tags,
+                site_hint,
+                confidence=0.9,
+                source="heuristic",
+                reason="Matched neutral domain rule.",
+                fingerprint=activity.fingerprint,
+            )
 
         if any(keyword in title for keyword in self.distracting_keywords):
-            return ClassificationResult("distracting", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "distracting",
+                tags,
+                site_hint,
+                confidence=0.86,
+                source="heuristic",
+                reason="Matched distracting keyword rule.",
+                fingerprint=activity.fingerprint,
+            )
 
         if any(keyword in title for keyword in self.productive_keywords):
-            return ClassificationResult("productive", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "productive",
+                tags,
+                site_hint,
+                confidence=0.86,
+                source="heuristic",
+                reason="Matched productive keyword rule.",
+                fingerprint=activity.fingerprint,
+            )
 
         if app in self.neutral_apps:
-            return ClassificationResult("neutral", self._collect_context_tags(app, title, site_hint), site_hint)
+            return ClassificationResult(
+                "neutral",
+                tags,
+                site_hint,
+                confidence=0.9,
+                source="heuristic",
+                reason="Matched neutral app rule.",
+                fingerprint=activity.fingerprint,
+            )
 
-        return ClassificationResult("unknown", self._collect_context_tags(app, title, site_hint), site_hint)
+        return ClassificationResult(
+            "unknown",
+            tags,
+            site_hint,
+            confidence=0.0,
+            source="unknown",
+            reason="No heuristic rule matched.",
+            fingerprint=activity.fingerprint,
+        )
+
+    def classify(self, app_name: str | None, window_title: str | None) -> ClassificationResult:
+        return self.classify_activity(self.normalize_activity(app_name, window_title))
 
 
 def load_classifier(rules_path: Path) -> RuleBasedClassifier:

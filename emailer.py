@@ -41,7 +41,7 @@ class ReportEmailer:
             )
 
         report_text = report_path.read_text(encoding="utf-8")
-        subject = f"Focus report - {report_path.stem.replace('focus-report-', '')}"
+        subject = self._build_subject(report_path, report_text)
         pdf_path = render_report_pdf(report_path, report_text)
 
         message = EmailMessage()
@@ -64,6 +64,12 @@ class ReportEmailer:
                 smtp.starttls()
             smtp.login(username, password)
             smtp.send_message(message)
+
+    def _build_subject(self, report_path: Path, report_text: str) -> str:
+        for line in report_text.splitlines():
+            if line.startswith("# "):
+                return line[2:].strip()
+        return f"Focus report - {report_path.stem.replace('focus-report-', '')}"
 
 
 __all__ = ["EmailSettings", "ReportEmailer", "build_email_body", "build_email_html", "render_report_pdf"]

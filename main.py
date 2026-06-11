@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, time as time_value, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import json
@@ -11,6 +11,7 @@ import time
 
 from classifier import load_classifier
 from database import FocusDatabase
+from dynamic_classifier import DynamicClassificationEngine, classifier_settings_from_dict
 from emailer import EmailSettings, ReportEmailer
 from nudger import NudgeConfig, Nudger
 from observer import get_active_window
@@ -26,8 +27,12 @@ RULES_PATH = CONFIG_DIR / "rules.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 DATABASE_PATH = DATA_DIR / "focus_tracker.db"
 LOG_PATH = DATA_DIR / "focus_tracker.log"
-PENDING_FINAL_REPORT_PATH = DATA_DIR / "pending_final_report.json"
 EMAILED_REPORT_RECEIPTS_PATH = DATA_DIR / "emailed_report_receipts.json"
+
+REPORT_KIND_DAILY = "daily"
+REPORT_KIND_WEEKLY = "weekly"
+REPORT_KIND_MONTHLY = "monthly"
+REPORT_KINDS = (REPORT_KIND_DAILY, REPORT_KIND_WEEKLY, REPORT_KIND_MONTHLY)
 
 
 DEFAULT_SETTINGS = {
@@ -41,7 +46,7 @@ DEFAULT_SETTINGS = {
         "switch_window_minutes": 10,
         "productive_minutes_threshold": 45,
     },
-    "daily_report_time": "22:00",
+    "scheduled_delivery_time": "08:00",
     "email_reports": {
         "enabled": False,
         "smtp_server": "smtp.gmail.com",
@@ -52,6 +57,18 @@ DEFAULT_SETTINGS = {
         "password_env": "FOCUS_TRACKER_EMAIL_PASSWORD",
         "use_tls": True,
         "attach_report_file": True,
+    },
+    "classifier": {
+        "enabled": True,
+        "mode": "hybrid",
+        "model": "gpt-5-mini",
+        "api_base_url": "https://api.openai.com/v1/responses",
+        "api_key_env": "OPENAI_API_KEY",
+        "api_timeout_seconds": 10,
+        "request_max_retries": 1,
+        "min_confidence_threshold": 0.75,
+        "reuse_provisional": True,
+        "max_output_tokens": 300,
     },
 }
 
@@ -87,6 +104,14 @@ def _safe_string(value: object, default: str) -> str:
     if isinstance(value, str):
         return value
     return default
+
+
+def _safe_float(value: object, default: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 
 def configure_logging(log_path: Path = LOG_PATH) -> logging.Logger:
@@ -168,8 +193,8 @@ def load_settings_from_data(raw: object) -> dict:
         raw.get("raw_activity_retention_days"),
         settings["raw_activity_retention_days"],
     )
-    if _is_valid_time_string(raw.get("daily_report_time")):
-        settings["daily_report_time"] = str(raw["daily_report_time"])
+    if _is_valid_time_string(raw.get("scheduled_delivery_time")):
+        settings["scheduled_delivery_time"] = str(raw["scheduled_delivery_time"])
 
     raw_thresholds = raw.get("nudge_thresholds", {})
     if isinstance(raw_thresholds, dict):
@@ -191,6 +216,43 @@ def load_settings_from_data(raw: object) -> dict:
         email_settings["attach_report_file"] = _safe_bool(
             raw_email.get("attach_report_file"),
             bool(email_settings["attach_report_file"]),
+        )
+
+    raw_classifier = raw.get("classifier", {})
+    if isinstance(raw_classifier, dict):
+        classifier_settings = settings["classifier"]
+        classifier_settings["enabled"] = _safe_bool(raw_classifier.get("enabled"), bool(classifier_settings["enabled"]))
+        classifier_settings["mode"] = _safe_string(raw_classifier.get("mode"), str(classifier_settings["mode"]))
+        classifier_settings["model"] = _safe_string(raw_classifier.get("model"), str(classifier_settings["model"]))
+        classifier_settings["api_base_url"] = _safe_string(
+            raw_classifier.get("api_base_url"),
+            str(classifier_settings["api_base_url"]),
+        )
+        classifier_settings["api_key_env"] = _safe_string(
+            raw_classifier.get("api_key_env"),
+            str(classifier_settings["api_key_env"]),
+        )
+        classifier_settings["api_timeout_seconds"] = _safe_int(
+            raw_classifier.get("api_timeout_seconds"),
+            int(classifier_settings["api_timeout_seconds"]),
+        )
+        classifier_settings["request_max_retries"] = _safe_int(
+            raw_classifier.get("request_max_retries"),
+            int(classifier_settings["request_max_retries"]),
+            minimum=0,
+        )
+        classifier_settings["min_confidence_threshold"] = _safe_float(
+            raw_classifier.get("min_confidence_threshold"),
+            float(classifier_settings["min_confidence_threshold"]),
+        )
+        classifier_settings["reuse_provisional"] = _safe_bool(
+            raw_classifier.get("reuse_provisional"),
+            bool(classifier_settings["reuse_provisional"]),
+        )
+        classifier_settings["max_output_tokens"] = _safe_int(
+            raw_classifier.get("max_output_tokens"),
+            int(classifier_settings["max_output_tokens"]),
+            minimum=64,
         )
 
     return settings
@@ -240,118 +302,193 @@ def build_emailer(settings: dict) -> ReportEmailer:
     )
 
 
-def load_emailed_report_receipts(path: Path | None = None) -> set[str]:
+def build_classification_engine(settings: dict, database: FocusDatabase) -> DynamicClassificationEngine:
+    classifier_settings = classifier_settings_from_dict(dict(settings["classifier"]))
+    return DynamicClassificationEngine(
+        database=database,
+        heuristic_classifier=load_classifier(RULES_PATH),
+        settings=classifier_settings,
+    )
+
+
+def _empty_receipts() -> dict[str, set[str]]:
+    return {kind: set() for kind in REPORT_KINDS}
+
+
+def load_emailed_report_receipts(path: Path | None = None) -> dict[str, set[str]]:
     target_path = path or EMAILED_REPORT_RECEIPTS_PATH
     if not target_path.exists():
-        return set()
+        return _empty_receipts()
 
     try:
         payload = json.loads(target_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return set()
+        return _empty_receipts()
 
-    if not isinstance(payload, list):
-        return set()
+    receipts = _empty_receipts()
+    if isinstance(payload, list):
+        receipts[REPORT_KIND_DAILY] = {item for item in payload if isinstance(item, str) and item}
+        return receipts
 
-    return {item for item in payload if isinstance(item, str) and item}
+    if not isinstance(payload, dict):
+        return receipts
+
+    for kind in REPORT_KINDS:
+        raw_items = payload.get(kind, [])
+        if isinstance(raw_items, list):
+            receipts[kind] = {item for item in raw_items if isinstance(item, str) and item}
+
+    return receipts
 
 
-def mark_report_emailed(report_date: str, path: Path | None = None) -> None:
+def save_emailed_report_receipts(receipts: dict[str, set[str]], path: Path | None = None) -> None:
+    target_path = path or EMAILED_REPORT_RECEIPTS_PATH
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = {
+        kind: sorted(receipts.get(kind, set()))
+        for kind in REPORT_KINDS
+    }
+    target_path.write_text(json.dumps(serialized, indent=2), encoding="utf-8")
+
+
+def mark_report_emailed(report_kind: str, period_key: str, path: Path | None = None) -> None:
     target_path = path or EMAILED_REPORT_RECEIPTS_PATH
     receipts = load_emailed_report_receipts(target_path)
-    if report_date in receipts:
+    if period_key in receipts.get(report_kind, set()):
         return
 
-    receipts.add(report_date)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(json.dumps(sorted(receipts), indent=2), encoding="utf-8")
+    receipts.setdefault(report_kind, set()).add(period_key)
+    save_emailed_report_receipts(receipts, target_path)
 
 
-def should_email_report(report_date: str, path: Path | None = None) -> bool:
-    return report_date not in load_emailed_report_receipts(path)
+def should_email_report(report_kind: str, period_key: str, path: Path | None = None) -> bool:
+    return period_key not in load_emailed_report_receipts(path).get(report_kind, set())
+
+
+def parse_scheduled_delivery_time(time_str: str) -> time_value:
+    parsed = datetime.strptime(time_str, "%H:%M")
+    return parsed.time()
+
+
+def get_daily_period_key(report_date: str) -> str:
+    return report_date
+
+
+def get_weekly_period_key(any_date: str) -> str:
+    target_date = date.fromisoformat(any_date)
+    week_start = target_date - timedelta(days=target_date.weekday())
+    return f"{week_start.isoformat()}_week"
+
+
+def get_monthly_period_key(any_date: str) -> str:
+    target_date = date.fromisoformat(any_date)
+    return f"{target_date.strftime('%Y-%m')}_month"
+
+
+def get_period_key(report_kind: str, anchor_date: str) -> str:
+    if report_kind == REPORT_KIND_DAILY:
+        return get_daily_period_key(anchor_date)
+    if report_kind == REPORT_KIND_WEEKLY:
+        return get_weekly_period_key(anchor_date)
+    if report_kind == REPORT_KIND_MONTHLY:
+        return get_monthly_period_key(anchor_date)
+    raise ValueError(f"Unsupported report kind: {report_kind}")
+
+
+def generate_report_for_period(reporter: DailyReporter, report_kind: str, anchor_date: str) -> Path:
+    if report_kind == REPORT_KIND_DAILY:
+        return reporter.generate_daily_report(anchor_date)
+    if report_kind == REPORT_KIND_WEEKLY:
+        return reporter.generate_weekly_report(anchor_date)
+    if report_kind == REPORT_KIND_MONTHLY:
+        return reporter.generate_monthly_report(anchor_date)
+    raise ValueError(f"Unsupported report kind: {report_kind}")
 
 
 def deliver_report(
     reporter: DailyReporter,
     emailer: ReportEmailer,
-    report_date: str,
+    report_kind: str,
+    anchor_date: str,
     logger: logging.Logger | None = None,
     receipts_path: Path | None = None,
 ) -> Path:
-    report_path = reporter.generate_daily_report(report_date)
-    reporter.generate_weekly_report(report_date)
-    reporter.generate_monthly_report(report_date)
-    if should_email_report(report_date, receipts_path):
-        emailer.send_report(report_path)
-        mark_report_emailed(report_date, receipts_path)
+    period_key = get_period_key(report_kind, anchor_date)
+    report_path = generate_report_for_period(reporter, report_kind, anchor_date)
+    if should_email_report(report_kind, period_key, receipts_path):
+        if emailer.is_configured():
+            emailer.send_report(report_path)
+            mark_report_emailed(report_kind, period_key, receipts_path)
+        elif logger is not None:
+            logger.info("Email delivery disabled; generated %s report for %s.", report_kind, period_key)
     elif logger is not None and emailer.is_configured():
-        logger.info("Skipping duplicate email delivery for report date: %s", report_date)
+        logger.info("Skipping duplicate email delivery for %s period: %s", report_kind, period_key)
     return report_path
 
 
-def mark_pending_final_report(report_date: str, path: Path = PENDING_FINAL_REPORT_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "report_date": report_date,
-        "created_at": datetime.now().replace(microsecond=0).isoformat(),
-    }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+def get_latest_due_daily_date(now: datetime, delivery_time: time_value) -> str:
+    target_date = now.date() - timedelta(days=1)
+    if now.time() < delivery_time:
+        target_date -= timedelta(days=1)
+    return target_date.isoformat()
 
 
-def load_pending_final_report(path: Path = PENDING_FINAL_REPORT_PATH) -> dict | None:
-    if not path.exists():
-        return None
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(payload, dict):
-        return None
-
-    report_date = payload.get("report_date")
-    created_at = payload.get("created_at")
-    if not isinstance(report_date, str) or not report_date:
-        return None
-    if created_at is not None and not isinstance(created_at, str):
-        return None
-
-    return {
-        "report_date": report_date,
-        "created_at": created_at or "",
-    }
+def get_latest_due_week_anchor(now: datetime, delivery_time: time_value) -> str:
+    current_week_start = now.date() - timedelta(days=now.weekday())
+    if now.weekday() == 0 and now.time() < delivery_time:
+        current_week_start -= timedelta(days=7)
+    latest_due_week_start = current_week_start - timedelta(days=7)
+    return latest_due_week_start.isoformat()
 
 
-def clear_pending_final_report(path: Path = PENDING_FINAL_REPORT_PATH) -> None:
-    if path.exists():
-        path.unlink()
+def get_latest_due_month_anchor(now: datetime, delivery_time: time_value) -> str:
+    current_month_start = now.date().replace(day=1)
+    if now.day == 1 and now.time() < delivery_time:
+        current_month_start = (current_month_start - timedelta(days=1)).replace(day=1)
+    latest_due_month_end = current_month_start - timedelta(days=1)
+    return latest_due_month_end.isoformat()
 
 
-def retry_pending_final_report(
+def get_latest_due_periods(now: datetime, delivery_time: time_value) -> list[tuple[str, str]]:
+    return [
+        (REPORT_KIND_DAILY, get_latest_due_daily_date(now, delivery_time)),
+        (REPORT_KIND_WEEKLY, get_latest_due_week_anchor(now, delivery_time)),
+        (REPORT_KIND_MONTHLY, get_latest_due_month_anchor(now, delivery_time)),
+    ]
+
+
+def deliver_due_reports(
     reporter: DailyReporter,
     emailer: ReportEmailer,
     logger: logging.Logger,
-    path: Path = PENDING_FINAL_REPORT_PATH,
-) -> Path | None:
-    pending_report = load_pending_final_report(path)
-    if pending_report is None:
-        return None
+    delivery_time: time_value,
+    *,
+    now: datetime | None = None,
+    receipts_path: Path | None = None,
+) -> list[tuple[str, str, Path]]:
+    current_time = now or datetime.now()
+    delivered_reports: list[tuple[str, str, Path]] = []
 
-    report_date = str(pending_report["report_date"])
-    try:
-        report_path = deliver_report(reporter, emailer, report_date, logger)
-    except Exception:
-        logger.warning(
-            "Retry for pending final report dated %s failed; keeping retry marker.",
-            report_date,
-            exc_info=True,
+    for report_kind, anchor_date in get_latest_due_periods(current_time, delivery_time):
+        period_key = get_period_key(report_kind, anchor_date)
+        if not should_email_report(report_kind, period_key, receipts_path) and emailer.is_configured():
+            continue
+
+        report_path = deliver_report(
+            reporter,
+            emailer,
+            report_kind,
+            anchor_date,
+            logger,
+            receipts_path,
         )
-        return None
+        delivered_reports.append((report_kind, period_key, report_path))
 
-    clear_pending_final_report(path)
-    logger.info("Recovered pending final report delivery for: %s", report_date)
-    return report_path
+        if emailer.is_configured() and should_email_report(report_kind, period_key, receipts_path) is False:
+            logger.info("Report emailed to: %s", emailer.settings.recipient)
+        logger.info("Report written to: %s", report_path)
+
+    return delivered_reports
 
 
 def run_retention_cleanup(
@@ -368,7 +505,7 @@ def run_retention_cleanup(
     return deleted_rows
 
 
-def schedule_daily_report(
+def schedule_report_delivery(
     reporter: DailyReporter,
     emailer: ReportEmailer,
     database: FocusDatabase,
@@ -379,13 +516,11 @@ def schedule_daily_report(
 
     logger = logging.getLogger(LOGGER_NAME)
 
+    delivery_time = parse_scheduled_delivery_time(time_str)
+
     def _run_report() -> None:
-        report_date = datetime.now().date().isoformat()
         try:
-            report_path = deliver_report(reporter, emailer, report_date, logger)
-            logger.info("Report written to: %s", report_path)
-            if emailer.is_configured():
-                logger.info("Report emailed to: %s", emailer.settings.recipient)
+            deliver_due_reports(reporter, emailer, logger, delivery_time)
             run_retention_cleanup(database, retention_days, logger)
         except Exception as exc:
             logger.warning("Scheduled report delivery failed: %s", exc, exc_info=True)
@@ -404,18 +539,19 @@ def main() -> None:
     database = FocusDatabase(DATABASE_PATH)
     database.initialize()
 
-    classifier = load_classifier(RULES_PATH)
+    classifier = build_classification_engine(settings, database)
     nudger = Nudger(database=database, config=build_nudge_config(settings))
     reporter = DailyReporter(database=database, reports_dir=REPORTS_DIR)
     emailer = build_emailer(settings)
 
-    retry_pending_final_report(reporter, emailer, logger)
+    delivery_time = parse_scheduled_delivery_time(str(settings["scheduled_delivery_time"]))
+    deliver_due_reports(reporter, emailer, logger, delivery_time)
     run_retention_cleanup(database, int(settings["raw_activity_retention_days"]), logger)
-    schedule_daily_report(
+    schedule_report_delivery(
         reporter,
         emailer,
         database,
-        settings["daily_report_time"],
+        settings["scheduled_delivery_time"],
         int(settings["raw_activity_retention_days"]),
     )
 
@@ -436,6 +572,11 @@ def main() -> None:
                     duration_seconds=interval_seconds,
                     context_tags=classification.context_tags,
                     site_hint=classification.site_hint,
+                    classification_confidence=classification.confidence,
+                    classification_source=classification.source,
+                    classification_provisional=classification.provisional,
+                    classification_reason=classification.reason,
+                    classification_fingerprint=classification.fingerprint,
                 )
                 nudger.check_nudges()
             except Exception as exc:
@@ -446,18 +587,9 @@ def main() -> None:
                 sleep_for = max(0.0, interval_seconds - elapsed)
                 time.sleep(sleep_for)
     except KeyboardInterrupt:
-        logger.info("Stopping tracker and generating final report...")
+        logger.info("Stopping tracker.")
     finally:
-        final_report_date = datetime.now().date().isoformat()
-        mark_pending_final_report(final_report_date)
-        try:
-            report_path = deliver_report(reporter, emailer, final_report_date, logger)
-            clear_pending_final_report()
-            logger.info("Report written to: %s", report_path)
-            if emailer.is_configured():
-                logger.info("Report emailed to: %s", emailer.settings.recipient)
-        except Exception as exc:
-            logger.warning("Could not generate final report: %s", exc, exc_info=True)
+        logger.info("Focus Tracker Agent stopped.")
 
 
 if __name__ == "__main__":

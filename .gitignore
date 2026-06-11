@@ -2,7 +2,7 @@ venv/
 __pycache__/
 .pytest_cache/
 *.pyc
-data/*.db
+data/*
 data/*.log
 reports/*.md
 reports/*.pdf

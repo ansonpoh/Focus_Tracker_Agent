@@ -18,9 +18,14 @@ def test_initialize_applies_schema_migrations(tmp_path) -> None:
             for row in connection.execute("PRAGMA table_info(activity_log)").fetchall()
         }
 
-    assert applied_versions == [1, 2, 3]
+    assert applied_versions == [1, 2, 3, 4, 5, 6]
     assert "context_tags" in columns
     assert "site_hint" in columns
+    assert "classification_confidence" in columns
+    assert "classification_source" in columns
+    assert "classification_provisional" in columns
+    assert "classification_reason" in columns
+    assert "classification_fingerprint" in columns
 
 
 def test_purge_activity_before_deletes_only_older_rows(tmp_path) -> None:
@@ -51,3 +56,37 @@ def test_purge_activity_before_deletes_only_older_rows(tmp_path) -> None:
     assert deleted_rows == 1
     assert len(remaining_rows) == 1
     assert remaining_rows[0]["timestamp"] == "2026-06-09T09:00:00"
+
+
+def test_classification_memory_and_overrides_persist(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+
+    database.upsert_classification_memory(
+        scope="app",
+        key="code.exe",
+        app_name="code.exe",
+        site_hint="",
+        normalized_title="editor",
+        category="productive",
+        context_tags=["work", "coding"],
+        confidence=0.91,
+        source="llm",
+        provisional=False,
+        reason="Looks like a code editor.",
+    )
+    database.upsert_classification_override(
+        scope="site",
+        key="youtube.com",
+        category="distracting",
+        context_tags=["video"],
+        reason="Manual correction",
+    )
+
+    memory_row = database.get_classification_memory("app", "code.exe")
+    override_row = database.get_classification_override("site", "youtube.com")
+
+    assert memory_row is not None
+    assert memory_row["category"] == "productive"
+    assert override_row is not None
+    assert override_row["category"] == "distracting"

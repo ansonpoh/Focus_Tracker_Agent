@@ -6,7 +6,13 @@
     "notion.exe",
     "obsidian.exe",
     "excel.exe",
-    "winword.exe"
+    "winword.exe",
+    "Codex.exe"
+  ],
+  "distracting_apps": [
+    "SlayTheSpire2.exe",
+    "NBA2K26.exe",
+    "Spotify.exe"
   ],
   "distracting_keywords": [
     "youtube",
@@ -15,7 +21,10 @@
     "reddit",
     "netflix",
     "valorant",
-    "steam"
+    "steam",
+    "twitch",
+    "wordle",
+    "connections"
   ],
   "productive_keywords": [
     "github",
@@ -25,7 +34,8 @@
     "docs",
     "localhost",
     "portfolio",
-    "resume"
+    "resume",
+    "chatgpt"
   ],
   "neutral_apps": [
     "explorer.exe",
@@ -57,12 +67,16 @@
     "instagram.com",
     "netflix.com",
     "x.com",
-    "twitter.com"
+    "twitter.com",
+    "twitch.tv",
+    "nytimes.com"
   ],
   "neutral_domains": [
     "mail.google.com",
     "calendar.google.com",
-    "drive.google.com"
+    "drive.google.com",
+    "chess.com",
+    "chatgpt.com"
   ],
   "domain_aliases": {
     "github": "github.com",
@@ -75,6 +89,13 @@
     "instagram": "instagram.com",
     "netflix": "netflix.com",
     "twitter": "twitter.com",
+    "twitch": "twitch.tv",
+    "chatgpt": "chatgpt.com",
+    "chess.com": "chess.com",
+    "chess": "chess.com",
+    "wordle": "nytimes.com",
+    "connections": "nytimes.com",
+    "new york times": "nytimes.com",
     "x.com": "x.com",
     "gmail": "mail.google.com",
     "google calendar": "calendar.google.com",
@@ -114,6 +135,10 @@
       "work",
       "writing"
     ],
+    "codex.exe": [
+      "work",
+      "ai_tool"
+    ],
     "discord.exe": [
       "communication"
     ],
@@ -122,6 +147,16 @@
     ],
     "whatsapp.exe": [
       "communication"
+    ],
+    "slaythespire2.exe": [
+      "game"
+    ],
+    "nba2k26.exe": [
+      "game",
+      "sports"
+    ],
+    "spotify.exe": [
+      "music"
     ]
   },
   "keyword_context_tags": {
@@ -151,6 +186,10 @@
     "stackoverflow": [
       "work",
       "research"
+    ],
+    "chatgpt": [
+      "work",
+      "ai_tool"
     ]
   },
   "domain_context_tags": {
@@ -205,6 +244,22 @@
     "localhost": [
       "work",
       "testing"
+    ],
+    "twitch.tv": [
+      "video",
+      "streaming"
+    ],
+    "chatgpt.com": [
+      "work",
+      "ai_tool"
+    ],
+    "chess.com": [
+      "game",
+      "learning"
+    ],
+    "nytimes.com": [
+      "game",
+      "news"
     ]
   }
 }
