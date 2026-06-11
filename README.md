@@ -13,6 +13,7 @@ This is a local Windows background agent that samples the foreground window ever
 - Sends non-invasive desktop nudges when behavior patterns suggest distraction or frequent switching.
 - Generates daily, weekly, and monthly Markdown reports in `reports/`.
 - Adds a confidence score to each report so low-quality data does not drive overconfident recommendations.
+- Evaluates explicit focus goals, session states, and intervention outcomes to act more like an adaptive coach.
 - Can optionally email daily, weekly, and monthly reports through Gmail SMTP.
 
 ## Privacy boundaries
@@ -28,9 +29,10 @@ This is a local Windows background agent that samples the foreground window ever
 2. `classifier.py` applies local heuristics from `config/rules.json`, then the dynamic classifier reuses learned labels or calls the OpenAI Responses API for unseen apps when enabled.
 3. `database.py` stores activity, browser site hints, context tags, and nudges in `data/focus_tracker.db`.
    It also applies schema migrations automatically and can purge old raw activity rows based on retention settings.
-4. `nudger.py` checks recent usage patterns and shows desktop notifications.
-5. `reporter.py` builds daily, weekly, and monthly Markdown reports, including focus blocks and interruption metrics.
-6. `main.py` runs the loop, schedules report delivery, and performs startup catch-up for missed sends.
+4. `adaptive_coach.py` evaluates session state, active goals, and prior intervention outcomes to choose gentle interventions.
+5. `nudger.py` provides the notification backend used for desktop messages and legacy threshold nudges in tests.
+6. `reporter.py` builds daily, weekly, and monthly Markdown reports, including focus blocks, goal progress, session-state summaries, and intervention effectiveness.
+7. `main.py` runs the loop, schedules report delivery, and performs startup catch-up for missed sends.
 
 ## Setup
 
@@ -139,6 +141,15 @@ This file controls runtime behavior:
 
 Set `OPENAI_API_KEY` in your environment or `.env` if you want the tracker to classify new apps with the OpenAI API instead of falling back to provisional neutral labels.
 
+`agent` controls the adaptive coach layer:
+
+- `enabled`
+- `default_mode`
+- `policy`
+- `goal_defaults`
+- `intervention_cooldowns`
+- `outcome_window_minutes`
+
 ### Classification Review Workflow
 
 Review recent low-confidence or provisional learned labels:
@@ -151,6 +162,32 @@ Save a correction that always overrides future automatic classification:
 
 ```powershell
 python classification_admin.py override --scope app --key spotify.exe --category distracting --tags music
+```
+
+### Adaptive Coach Workflow
+
+List active goals:
+
+```powershell
+python agent_admin.py list-goals
+```
+
+Add a goal:
+
+```powershell
+python agent_admin.py add-goal --type daily_productive_minutes --name "Daily productive minutes" --target 180
+```
+
+Disable a goal:
+
+```powershell
+python agent_admin.py disable-goal --id 1
+```
+
+Review intervention effectiveness:
+
+```powershell
+python agent_admin.py list-intervention-stats
 ```
 
 ### Gmail delivery

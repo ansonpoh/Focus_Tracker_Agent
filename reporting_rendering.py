@@ -6,6 +6,8 @@ from typing import Any
 from reporting_analysis import (
     BrowserSiteSummary,
     FocusBlock,
+    InterventionSummary,
+    SessionStateSummary,
     category_distribution,
     confidence_label,
     delta_label,
@@ -48,6 +50,9 @@ def build_report_text(
     previous_day: Any,
     week_snapshots: list[Any],
     best_week_day: Any,
+    goal_rows: list[dict[str, Any]],
+    session_state_rows: list[SessionStateSummary],
+    intervention_rows: list[InterventionSummary],
     quality_warnings: list[str],
     main_finding: str,
     recommendation: str,
@@ -218,6 +223,50 @@ def build_report_text(
             report_lines.append(f"Gap to that day: {format_duration(gap)}")
     else:
         report_lines.append("No meaningful weekly comparison yet. More than one day of data is needed.")
+
+    report_lines.extend(["", "## Goal Progress"])
+    if goal_rows:
+        report_lines.extend(
+            markdown_table(
+                ["Goal", "Status", "Progress", "Notes"],
+                [
+                    [
+                        str(row["name"]),
+                        str(row["status"]),
+                        f"{int(row['progress_value'])}/{int(row['target_value'])}",
+                        str(row["detail"]),
+                    ]
+                    for row in goal_rows
+                ],
+            )
+        )
+    else:
+        report_lines.append("No goal evaluations were recorded for this period.")
+
+    report_lines.extend(["", "## Session States"])
+    if session_state_rows:
+        report_lines.extend(
+            markdown_table(
+                ["State", "Samples"],
+                [[row.state, str(row.count)] for row in session_state_rows],
+            )
+        )
+    else:
+        report_lines.append("No session-state snapshots were recorded for this period.")
+
+    report_lines.extend(["", "## Interventions"])
+    if intervention_rows:
+        report_lines.extend(
+            markdown_table(
+                ["Action", "Count", "Success", "Partial", "Failure"],
+                [
+                    [row.action, str(row.count), str(row.success), str(row.partial), str(row.failure)]
+                    for row in intervention_rows
+                ],
+            )
+        )
+    else:
+        report_lines.append("No adaptive-coach interventions were recorded for this period.")
 
     report_lines.extend(["", "## Data Quality"])
     if quality_warnings:

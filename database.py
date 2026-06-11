@@ -121,6 +121,91 @@ SCHEMA_MIGRATIONS: list[tuple[int, str]] = [
         );
         """,
     ),
+    (
+        7,
+        """
+        CREATE TABLE IF NOT EXISTS goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            target_value INTEGER NOT NULL,
+            window_minutes INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            schedule_start TEXT NOT NULL DEFAULT '00:00',
+            schedule_end TEXT NOT NULL DEFAULT '23:59',
+            days_of_week TEXT NOT NULL DEFAULT '[0,1,2,3,4,5,6]',
+            config_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        8,
+        """
+        CREATE TABLE IF NOT EXISTS goal_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_id INTEGER NOT NULL,
+            timestamp TEXT NOT NULL,
+            status TEXT NOT NULL,
+            progress_value INTEGER NOT NULL,
+            target_value INTEGER NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            at_risk INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (goal_id) REFERENCES goals (id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_goal_evaluations_goal_timestamp
+        ON goal_evaluations (goal_id, timestamp);
+        """,
+    ),
+    (
+        9,
+        """
+        CREATE TABLE IF NOT EXISTS interventions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            action TEXT NOT NULL,
+            message TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            session_state TEXT NOT NULL DEFAULT '',
+            goal_id INTEGER,
+            FOREIGN KEY (goal_id) REFERENCES goals (id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_interventions_action_timestamp
+        ON interventions (action, timestamp);
+
+        CREATE TABLE IF NOT EXISTS intervention_outcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intervention_id INTEGER NOT NULL UNIQUE,
+            timestamp TEXT NOT NULL,
+            outcome_status TEXT NOT NULL,
+            productive_recovered INTEGER NOT NULL DEFAULT 0,
+            distraction_ratio_before REAL NOT NULL DEFAULT 0,
+            distraction_ratio_after REAL NOT NULL DEFAULT 0,
+            switch_count_before INTEGER NOT NULL DEFAULT 0,
+            switch_count_after INTEGER NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (intervention_id) REFERENCES interventions (id)
+        );
+        """,
+    ),
+    (
+        10,
+        """
+        CREATE TABLE IF NOT EXISTS session_state_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            session_state TEXT NOT NULL,
+            productive_streak_seconds INTEGER NOT NULL DEFAULT 0,
+            switch_count INTEGER NOT NULL DEFAULT 0,
+            distraction_ratio REAL NOT NULL DEFAULT 0,
+            productive_ratio REAL NOT NULL DEFAULT 0,
+            detail TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_state_timestamp
+        ON session_state_snapshots (timestamp);
+        """,
+    ),
 ]
 
 
@@ -612,3 +697,322 @@ class FocusDatabase:
                 (float(confidence_threshold), int(limit)),
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
+
+    def upsert_goal(
+        self,
+        *,
+        goal_type: str,
+        name: str,
+        target_value: int,
+        window_minutes: int,
+        schedule_start: str,
+        schedule_end: str,
+        days_of_week: list[int],
+        config: dict[str, Any] | None = None,
+        active: bool = True,
+    ) -> int:
+        timestamp = _iso(datetime.now())
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO goals (
+                    goal_type, name, target_value, window_minutes, active,
+                    schedule_start, schedule_end, days_of_week, config_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    goal_type,
+                    name,
+                    int(target_value),
+                    int(window_minutes),
+                    1 if active else 0,
+                    schedule_start,
+                    schedule_end,
+                    json.dumps(days_of_week),
+                    json.dumps(config or {}),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def disable_goal(self, goal_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE goals
+                SET active = 0, updated_at = ?
+                WHERE id = ?
+                """,
+                (_iso(datetime.now()), int(goal_id)),
+            )
+
+    def list_goals(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        query = """
+            SELECT id, goal_type, name, target_value, window_minutes, active,
+                   schedule_start, schedule_end, days_of_week, config_json, created_at, updated_at
+            FROM goals
+        """
+        params: tuple[Any, ...] = ()
+        if active_only:
+            query += " WHERE active = 1"
+        query += " ORDER BY active DESC, id ASC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def record_goal_evaluation(
+        self,
+        *,
+        goal_id: int,
+        timestamp: str,
+        status: str,
+        progress_value: int,
+        target_value: int,
+        detail: str,
+        at_risk: bool,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO goal_evaluations (
+                    goal_id, timestamp, status, progress_value, target_value, detail, at_risk
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(goal_id),
+                    timestamp,
+                    status,
+                    int(progress_value),
+                    int(target_value),
+                    detail,
+                    1 if at_risk else 0,
+                ),
+            )
+
+    def latest_goal_evaluations_for_period(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT ge.goal_id, g.name, g.goal_type, ge.timestamp, ge.status, ge.progress_value, ge.target_value, ge.detail, ge.at_risk
+                FROM goal_evaluations ge
+                JOIN goals g ON g.id = ge.goal_id
+                JOIN (
+                    SELECT goal_id, MAX(timestamp) AS max_timestamp
+                    FROM goal_evaluations
+                    WHERE timestamp >= ? AND timestamp < ?
+                    GROUP BY goal_id
+                ) latest
+                  ON latest.goal_id = ge.goal_id
+                 AND latest.max_timestamp = ge.timestamp
+                ORDER BY ge.goal_id ASC
+                """,
+                (_iso(start), _iso(end)),
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def insert_intervention(
+        self,
+        *,
+        timestamp: str,
+        action: str,
+        message: str,
+        reason: str,
+        session_state: str,
+        goal_id: int | None,
+    ) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO interventions (timestamp, action, message, reason, session_state, goal_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (timestamp, action, message, reason, session_state, goal_id),
+            )
+            return int(cursor.lastrowid)
+
+    def list_pending_interventions(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT i.id, i.timestamp, i.action, i.message, i.reason, i.session_state, i.goal_id
+                FROM interventions i
+                LEFT JOIN intervention_outcomes io ON io.intervention_id = i.id
+                WHERE io.intervention_id IS NULL
+                ORDER BY i.timestamp ASC, i.id ASC
+                """
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def record_intervention_outcome(
+        self,
+        *,
+        intervention_id: int,
+        timestamp: str,
+        outcome_status: str,
+        productive_recovered: bool,
+        distraction_ratio_before: float,
+        distraction_ratio_after: float,
+        switch_count_before: int,
+        switch_count_after: int,
+        notes: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO intervention_outcomes (
+                    intervention_id, timestamp, outcome_status, productive_recovered,
+                    distraction_ratio_before, distraction_ratio_after, switch_count_before, switch_count_after, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(intervention_id) DO UPDATE SET
+                    timestamp = excluded.timestamp,
+                    outcome_status = excluded.outcome_status,
+                    productive_recovered = excluded.productive_recovered,
+                    distraction_ratio_before = excluded.distraction_ratio_before,
+                    distraction_ratio_after = excluded.distraction_ratio_after,
+                    switch_count_before = excluded.switch_count_before,
+                    switch_count_after = excluded.switch_count_after,
+                    notes = excluded.notes
+                """,
+                (
+                    int(intervention_id),
+                    timestamp,
+                    outcome_status,
+                    1 if productive_recovered else 0,
+                    float(distraction_ratio_before),
+                    float(distraction_ratio_after),
+                    int(switch_count_before),
+                    int(switch_count_after),
+                    notes,
+                ),
+            )
+
+    def get_recent_intervention_timestamp(self, action: str) -> datetime | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT timestamp
+                FROM interventions
+                WHERE action = ?
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1
+                """,
+                (action,),
+            ).fetchone()
+        if row is None or not isinstance(row["timestamp"], str):
+            return None
+        return _parse_iso(row["timestamp"])
+
+    def get_intervention_effectiveness_stats(self, *, action: str | None = None, start: datetime | None = None, end: datetime | None = None) -> dict[str, int]:
+        query = """
+            SELECT io.outcome_status, COUNT(*) AS count_value
+            FROM intervention_outcomes io
+            JOIN interventions i ON i.id = io.intervention_id
+            WHERE 1 = 1
+        """
+        params: list[Any] = []
+        if action is not None:
+            query += " AND i.action = ?"
+            params.append(action)
+        if start is not None:
+            query += " AND i.timestamp >= ?"
+            params.append(_iso(start))
+        if end is not None:
+            query += " AND i.timestamp < ?"
+            params.append(_iso(end))
+        query += " GROUP BY io.outcome_status"
+        stats = {"success": 0, "partial": 0, "failure": 0, "pending": 0, "total": 0}
+        with self._connect() as connection:
+            rows = connection.execute(query, tuple(params)).fetchall()
+        for row in rows:
+            status = str(row["outcome_status"] or "")
+            count_value = int(row["count_value"] or 0)
+            if status in stats:
+                stats[status] = count_value
+            stats["total"] += count_value
+        return stats
+
+    def list_interventions_for_period(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT i.id, i.timestamp, i.action, i.message, i.reason, i.session_state, i.goal_id,
+                       io.outcome_status, io.productive_recovered, io.distraction_ratio_before,
+                       io.distraction_ratio_after, io.switch_count_before, io.switch_count_after, io.notes
+                FROM interventions i
+                LEFT JOIN intervention_outcomes io ON io.intervention_id = i.id
+                WHERE i.timestamp >= ? AND i.timestamp < ?
+                ORDER BY i.timestamp ASC, i.id ASC
+                """,
+                (_iso(start), _iso(end)),
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def insert_session_state_snapshot(
+        self,
+        *,
+        timestamp: str,
+        session_state: str,
+        productive_streak_seconds: int,
+        switch_count: int,
+        distraction_ratio: float,
+        productive_ratio: float,
+        detail: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO session_state_snapshots (
+                    timestamp, session_state, productive_streak_seconds, switch_count,
+                    distraction_ratio, productive_ratio, detail
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp,
+                    session_state,
+                    int(productive_streak_seconds),
+                    int(switch_count),
+                    float(distraction_ratio),
+                    float(productive_ratio),
+                    detail,
+                ),
+            )
+
+    def list_session_states_for_period(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT timestamp, session_state, productive_streak_seconds, switch_count,
+                       distraction_ratio, productive_ratio, detail
+                FROM session_state_snapshots
+                WHERE timestamp >= ? AND timestamp < ?
+                ORDER BY timestamp ASC, id ASC
+                """,
+                (_iso(start), _iso(end)),
+            ).fetchall()
+        return [_row_to_dict(row) for row in rows]
+
+    def count_focus_blocks_for_date(self, *, goal_date: str, minimum_duration_seconds: int) -> int:
+        rows = self.query_activity_for_date(goal_date)
+        current_block = 0
+        count_value = 0
+        previous_timestamp: datetime | None = None
+        for row in rows:
+            timestamp_value = row.get("timestamp")
+            category = str(row.get("category") or "").lower()
+            if not isinstance(timestamp_value, str) or category != "productive":
+                if current_block >= minimum_duration_seconds:
+                    count_value += 1
+                current_block = 0
+                previous_timestamp = None
+                continue
+            current_timestamp = _parse_iso(timestamp_value)
+            if previous_timestamp is not None and (current_timestamp - previous_timestamp).total_seconds() > 15:
+                if current_block >= minimum_duration_seconds:
+                    count_value += 1
+                current_block = 0
+            current_block += int(row.get("duration_seconds") or 0)
+            previous_timestamp = current_timestamp
+        if current_block >= minimum_duration_seconds:
+            count_value += 1
+        return count_value

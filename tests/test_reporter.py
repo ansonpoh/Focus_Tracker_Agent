@@ -299,3 +299,74 @@ def test_high_confidence_report_keeps_specific_recommendation(tmp_path) -> None:
     assert "Treat today's recommendation as provisional." not in report_text
     assert "Repeat yesterday's opening work pattern earlier in the day." in report_text
     assert "The next goal is one uninterrupted 35m focus block." in report_text
+
+
+def test_report_includes_goal_progress_and_interventions(tmp_path) -> None:
+    database = FocusDatabase(tmp_path / "focus.db")
+    database.initialize()
+    reporter = DailyReporter(database=database, reports_dir=tmp_path / "reports")
+
+    goal_id = database.upsert_goal(
+        goal_type="daily_productive_minutes",
+        name="Daily productive minutes",
+        target_value=120,
+        window_minutes=0,
+        schedule_start="08:00",
+        schedule_end="18:00",
+        days_of_week=[1],
+        config={},
+    )
+    database.record_goal_evaluation(
+        goal_id=goal_id,
+        timestamp="2026-06-09T10:00:00",
+        status="in_progress",
+        progress_value=45,
+        target_value=120,
+        detail="Productive minutes today: 45/120.",
+        at_risk=True,
+    )
+    database.insert_session_state_snapshot(
+        timestamp="2026-06-09T10:05:00",
+        session_state="drifting",
+        productive_streak_seconds=0,
+        switch_count=12,
+        distraction_ratio=0.8,
+        productive_ratio=0.1,
+        detail="Recent activity is distraction-heavy.",
+    )
+    intervention_id = database.insert_intervention(
+        timestamp="2026-06-09T10:06:00",
+        action="warn_drift",
+        message="Return to your task.",
+        reason="Recent activity is distraction-heavy.",
+        session_state="drifting",
+        goal_id=goal_id,
+    )
+    database.record_intervention_outcome(
+        intervention_id=intervention_id,
+        timestamp="2026-06-09T10:20:00",
+        outcome_status="success",
+        productive_recovered=True,
+        distraction_ratio_before=0.8,
+        distraction_ratio_after=0.2,
+        switch_count_before=12,
+        switch_count_after=3,
+        notes="Recovered.",
+    )
+    database.insert_activity(
+        timestamp="2026-06-09T09:00:00",
+        app_name="Code.exe",
+        window_title="Editor",
+        category="productive",
+        duration_seconds=1800,
+        context_tags=["work", "coding"],
+    )
+
+    report_text = reporter.generate_daily_report("2026-06-09").read_text(encoding="utf-8")
+
+    assert "## Goal Progress" in report_text
+    assert "Daily productive minutes" in report_text
+    assert "## Session States" in report_text
+    assert "drifting" in report_text
+    assert "## Interventions" in report_text
+    assert "warn_drift" in report_text

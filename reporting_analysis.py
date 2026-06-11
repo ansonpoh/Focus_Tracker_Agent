@@ -68,6 +68,21 @@ class BrowserSiteSummary:
     detected_from_title: bool
 
 
+@dataclass
+class SessionStateSummary:
+    state: str
+    count: int
+
+
+@dataclass
+class InterventionSummary:
+    action: str
+    count: int
+    success: int
+    partial: int
+    failure: int
+
+
 def format_duration(seconds: int) -> str:
     seconds = max(0, int(seconds))
     if seconds < 60:
@@ -752,3 +767,31 @@ def recommendation_for_patterns(
         "Begin with one 15-minute protected block on your most important task. "
         f"The next goal is one uninterrupted 10-minute {top_focus_app} session."
     )
+
+
+def summarize_session_states(rows: list[dict[str, Any]], limit: int = 5) -> list[SessionStateSummary]:
+    totals: Counter[str] = Counter()
+    for row in rows:
+        state = str(row.get("session_state") or "").strip()
+        if state:
+            totals[state] += 1
+    return [SessionStateSummary(state=state, count=count) for state, count in totals.most_common(limit)]
+
+
+def summarize_interventions(rows: list[dict[str, Any]]) -> list[InterventionSummary]:
+    stats: dict[str, InterventionSummary] = {}
+    for row in rows:
+        action = str(row.get("action") or "").strip()
+        if not action:
+            continue
+        if action not in stats:
+            stats[action] = InterventionSummary(action=action, count=0, success=0, partial=0, failure=0)
+        stats[action].count += 1
+        outcome_status = str(row.get("outcome_status") or "").strip().lower()
+        if outcome_status == "success":
+            stats[action].success += 1
+        elif outcome_status == "partial":
+            stats[action].partial += 1
+        elif outcome_status == "failure":
+            stats[action].failure += 1
+    return sorted(stats.values(), key=lambda item: (-item.count, item.action))

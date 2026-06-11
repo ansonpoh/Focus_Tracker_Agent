@@ -13,9 +13,10 @@ from classifier import load_classifier
 from database import FocusDatabase
 from dynamic_classifier import DynamicClassificationEngine, classifier_settings_from_dict
 from emailer import EmailSettings, ReportEmailer
-from nudger import NudgeConfig, Nudger
+from nudger import DesktopNotifier, NudgeConfig
 from observer import get_active_window
 from reporter import DailyReporter
+from adaptive_coach import AdaptiveCoach, agent_settings_from_dict
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -69,6 +70,33 @@ DEFAULT_SETTINGS = {
         "min_confidence_threshold": 0.75,
         "reuse_provisional": True,
         "max_output_tokens": 300,
+    },
+    "agent": {
+        "enabled": True,
+        "default_mode": "adaptive_coach",
+        "policy": {
+            "productive_window_minutes": 30,
+            "break_threshold_minutes": 45,
+            "drifting_window_minutes": 30,
+            "distracting_ratio_threshold": 0.5,
+            "fragmented_window_minutes": 10,
+            "fragmented_switch_threshold": 20,
+            "neutral_window_minutes": 20,
+        },
+        "goal_defaults": {
+            "daily_productive_minutes": 120,
+            "focus_block_count": 3,
+            "focus_block_duration_minutes": 25,
+            "distracting_limit_minutes": 20,
+            "blocked_sites": ["youtube.com", "reddit.com", "x.com"],
+        },
+        "intervention_cooldowns": {
+            "encourage_focus": 45,
+            "warn_drift": 30,
+            "suggest_break": 60,
+            "goal_reminder": 90,
+        },
+        "outcome_window_minutes": 15,
     },
 }
 
@@ -255,6 +283,43 @@ def load_settings_from_data(raw: object) -> dict:
             minimum=64,
         )
 
+    raw_agent = raw.get("agent", {})
+    if isinstance(raw_agent, dict):
+        agent_settings = settings["agent"]
+        agent_settings["enabled"] = _safe_bool(raw_agent.get("enabled"), bool(agent_settings["enabled"]))
+        agent_settings["default_mode"] = _safe_string(raw_agent.get("default_mode"), str(agent_settings["default_mode"]))
+
+        raw_policy = raw_agent.get("policy", {})
+        if isinstance(raw_policy, dict):
+            policy_settings = agent_settings["policy"]
+            for key, default_value in list(policy_settings.items()):
+                if isinstance(default_value, float):
+                    policy_settings[key] = _safe_float(raw_policy.get(key), float(default_value), minimum=0.0, maximum=1.0)
+                else:
+                    policy_settings[key] = _safe_int(raw_policy.get(key), int(default_value))
+
+        raw_goal_defaults = raw_agent.get("goal_defaults", {})
+        if isinstance(raw_goal_defaults, dict):
+            goal_defaults = agent_settings["goal_defaults"]
+            for key, default_value in list(goal_defaults.items()):
+                if isinstance(default_value, list):
+                    candidate = raw_goal_defaults.get(key)
+                    if isinstance(candidate, list):
+                        goal_defaults[key] = [str(item).strip().lower() for item in candidate if str(item).strip()]
+                else:
+                    goal_defaults[key] = _safe_int(raw_goal_defaults.get(key), int(default_value))
+
+        raw_cooldowns = raw_agent.get("intervention_cooldowns", {})
+        if isinstance(raw_cooldowns, dict):
+            cooldown_settings = agent_settings["intervention_cooldowns"]
+            for key, default_value in list(cooldown_settings.items()):
+                cooldown_settings[key] = _safe_int(raw_cooldowns.get(key), int(default_value))
+
+        agent_settings["outcome_window_minutes"] = _safe_int(
+            raw_agent.get("outcome_window_minutes"),
+            int(agent_settings["outcome_window_minutes"]),
+        )
+
     return settings
 
 
@@ -308,6 +373,48 @@ def build_classification_engine(settings: dict, database: FocusDatabase) -> Dyna
         database=database,
         heuristic_classifier=load_classifier(RULES_PATH),
         settings=classifier_settings,
+    )
+
+
+def build_agent_settings(settings: dict):
+    return agent_settings_from_dict(dict(settings["agent"]))
+
+
+def ensure_default_goals(database: FocusDatabase, settings: dict) -> None:
+    existing_goals = database.list_goals()
+    if existing_goals:
+        return
+
+    goal_defaults = settings["agent"]["goal_defaults"]
+    database.upsert_goal(
+        goal_type="daily_productive_minutes",
+        name="Daily productive minutes",
+        target_value=int(goal_defaults["daily_productive_minutes"]),
+        window_minutes=0,
+        schedule_start="08:00",
+        schedule_end="18:00",
+        days_of_week=[0, 1, 2, 3, 4],
+        config={},
+    )
+    database.upsert_goal(
+        goal_type="focus_block_count",
+        name="Meaningful focus blocks",
+        target_value=int(goal_defaults["focus_block_count"]),
+        window_minutes=int(goal_defaults["focus_block_duration_minutes"]),
+        schedule_start="08:00",
+        schedule_end="18:00",
+        days_of_week=[0, 1, 2, 3, 4],
+        config={},
+    )
+    database.upsert_goal(
+        goal_type="distracting_limit",
+        name="Distracting time limit",
+        target_value=int(goal_defaults["distracting_limit_minutes"]),
+        window_minutes=60,
+        schedule_start="08:00",
+        schedule_end="18:00",
+        days_of_week=[0, 1, 2, 3, 4],
+        config={"blocked_sites": list(goal_defaults.get("blocked_sites", []))},
     )
 
 
@@ -538,11 +645,16 @@ def main() -> None:
 
     database = FocusDatabase(DATABASE_PATH)
     database.initialize()
+    ensure_default_goals(database, settings)
 
     classifier = build_classification_engine(settings, database)
-    nudger = Nudger(database=database, config=build_nudge_config(settings))
     reporter = DailyReporter(database=database, reports_dir=REPORTS_DIR)
     emailer = build_emailer(settings)
+    coach = AdaptiveCoach(
+        database=database,
+        settings=build_agent_settings(settings),
+        notifier=DesktopNotifier(),
+    )
 
     delivery_time = parse_scheduled_delivery_time(str(settings["scheduled_delivery_time"]))
     deliver_due_reports(reporter, emailer, logger, delivery_time)
@@ -578,7 +690,7 @@ def main() -> None:
                     classification_reason=classification.reason,
                     classification_fingerprint=classification.fingerprint,
                 )
-                nudger.check_nudges()
+                coach.tick()
             except Exception as exc:
                 logger.warning("Tracking iteration failed: %s", exc, exc_info=True)
             finally:

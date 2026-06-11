@@ -31,5 +31,36 @@
     "min_confidence_threshold": 0.75,
     "reuse_provisional": true,
     "max_output_tokens": 300
+  },
+  "agent": {
+    "enabled": true,
+    "default_mode": "adaptive_coach",
+    "policy": {
+      "productive_window_minutes": 30,
+      "break_threshold_minutes": 45,
+      "drifting_window_minutes": 30,
+      "distracting_ratio_threshold": 0.5,
+      "fragmented_window_minutes": 10,
+      "fragmented_switch_threshold": 20,
+      "neutral_window_minutes": 20
+    },
+    "goal_defaults": {
+      "daily_productive_minutes": 120,
+      "focus_block_count": 3,
+      "focus_block_duration_minutes": 25,
+      "distracting_limit_minutes": 20,
+      "blocked_sites": [
+        "youtube.com",
+        "reddit.com",
+        "x.com"
+      ]
+    },
+    "intervention_cooldowns": {
+      "encourage_focus": 45,
+      "warn_drift": 30,
+      "suggest_break": 60,
+      "goal_reminder": 90
+    },
+    "outcome_window_minutes": 15
   }
 }

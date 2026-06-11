@@ -21,6 +21,8 @@ from reporting_analysis import (
     recommendation_for_low_confidence,
     recommendation_for_patterns,
     report_confidence_score,
+    summarize_interventions,
+    summarize_session_states,
     timeline_notes,
     top_apps,
     top_context_tags,
@@ -132,6 +134,23 @@ class DailyReporter:
             totals=totals,
             previous_day=previous_day,
         )
+        if date_key.endswith("_week"):
+            week_start = anchor_date - timedelta(days=anchor_date.weekday())
+            period_start = datetime.combine(week_start, datetime.min.time())
+            period_end = period_start + timedelta(days=7)
+        elif date_key.endswith("_month"):
+            month_start = anchor_date.replace(day=1)
+            period_start = datetime.combine(month_start, datetime.min.time())
+            if month_start.month == 12:
+                period_end = datetime.combine(month_start.replace(year=month_start.year + 1, month=1), datetime.min.time())
+            else:
+                period_end = datetime.combine(month_start.replace(month=month_start.month + 1), datetime.min.time())
+        else:
+            period_start = datetime.combine(anchor_date, datetime.min.time())
+            period_end = period_start + timedelta(days=1)
+        goal_rows = self.database.latest_goal_evaluations_for_period(period_start, period_end)
+        intervention_rows = self.database.list_interventions_for_period(period_start, period_end)
+        session_state_rows = self.database.list_session_states_for_period(period_start, period_end)
         confidence_score = report_confidence_score(
             totals=totals,
             quality_warnings=quality_warnings,
@@ -182,6 +201,9 @@ class DailyReporter:
             previous_day=previous_day,
             week_snapshots=week_snapshots,
             best_week_day=best_week_day,
+            goal_rows=goal_rows,
+            session_state_rows=summarize_session_states(session_state_rows),
+            intervention_rows=summarize_interventions(intervention_rows),
             quality_warnings=quality_warnings,
             main_finding=main_finding,
             recommendation=recommendation,
